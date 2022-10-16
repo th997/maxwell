@@ -126,6 +126,16 @@
 
   <dependencies>
     <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-jdbc</artifactId>
+      <version>5.3.23</version>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>42.4.1</version>
+    </dependency>
+    <dependency>
       <groupId>com.google.cloud</groupId>
       <artifactId>google-cloud-bigquerystorage</artifactId>
       <version>2.14.2</version>
@@ -406,20 +416,20 @@
           <keepStagingRepositoryOnCloseRuleFailure>true</keepStagingRepositoryOnCloseRuleFailure>
         </configuration>
       </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-gpg-plugin</artifactId>
-        <version>1.5</version>
-        <executions>
-          <execution>
-            <id>sign-artifacts</id>
-            <phase>verify</phase>
-            <goals>
-              <goal>sign</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
+<!--      <plugin>-->
+<!--        <groupId>org.apache.maven.plugins</groupId>-->
+<!--        <artifactId>maven-gpg-plugin</artifactId>-->
+<!--        <version>1.5</version>-->
+<!--        <executions>-->
+<!--          <execution>-->
+<!--            <id>sign-artifacts</id>-->
+<!--            <phase>verify</phase>-->
+<!--            <goals>-->
+<!--              <goal>sign</goal>-->
+<!--            </goals>-->
+<!--          </execution>-->
+<!--        </executions>-->
+<!--      </plugin>-->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-source-plugin</artifactId>
@@ -433,23 +443,23 @@
           </execution>
         </executions>
       </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-javadoc-plugin</artifactId>
-        <version>3.3.1</version>
-        <configuration>
-            <additionalOptions>--no-module-directories</additionalOptions>
-            <source>11</source>
-        </configuration>
-        <executions>
-          <execution>
-            <id>attach-javadocs</id>
-            <goals>
-              <goal>jar</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
+<!--      <plugin>-->
+<!--        <groupId>org.apache.maven.plugins</groupId>-->
+<!--        <artifactId>maven-javadoc-plugin</artifactId>-->
+<!--        <version>3.3.1</version>-->
+<!--        <configuration>-->
+<!--            <additionalOptions>&#45;&#45;no-module-directories</additionalOptions>-->
+<!--            <source>11</source>-->
+<!--        </configuration>-->
+<!--        <executions>-->
+<!--          <execution>-->
+<!--            <id>attach-javadocs</id>-->
+<!--            <goals>-->
+<!--              <goal>jar</goal>-->
+<!--            </goals>-->
+<!--          </execution>-->
+<!--        </executions>-->
+<!--      </plugin>-->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>

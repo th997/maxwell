@@ -10,7 +10,7 @@ import java.sql.SQLException;
 import java.util.NoSuchElementException;
 
 public class C3P0ConnectionPool implements ConnectionPool {
-	private final ComboPooledDataSource cpds;
+	public final ComboPooledDataSource cpds;
 	static final Logger LOGGER = LoggerFactory.getLogger(C3P0ConnectionPool.class);
 
 	@Override

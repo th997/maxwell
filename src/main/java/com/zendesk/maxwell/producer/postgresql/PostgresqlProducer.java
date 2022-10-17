@@ -22,10 +22,10 @@ import java.util.stream.Collectors;
 
 public class PostgresqlProducer extends AbstractProducer implements StoppableTask {
 	static final Logger LOG = LoggerFactory.getLogger(PostgresqlProducer.class);
-	private static final String SQL_CREATE = "create table \"%s\".\"%s\" (%s);";
-	private static final String SQL_INSERT = "insert into \"%s\".\"%s\"(%s) values(%s);";
-	private static final String SQL_UPDATE = "update \"%s\".\"%s\" set %s where %s;";
-	private static final String SQL_DELETE = "delete from \"%s\".\"%s\" where %s;";
+	private static final String SQL_CREATE = "create table \"%s\".\"%s\" (%s)";
+	private static final String SQL_INSERT = "insert into \"%s\".\"%s\"(%s) values(%s)";
+	private static final String SQL_UPDATE = "update \"%s\".\"%s\" set %s where %s";
+	private static final String SQL_DELETE = "delete from \"%s\".\"%s\" where %s";
 
 	private static final String SQL_GET_POSTGRES_INDEX = "select indexname key_name,indexdef index_def from pg_catalog.pg_indexes where schemaname=? and tablename=?";
 	private static final String SQL_GET_MYSQL_INDEX = "show index from %s.%s";
@@ -39,11 +39,16 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private static final String SQL_GET_POSTGRES_DB = "select count(*) from information_schema.schemata where schema_name =?";
 
-
 	private Properties customProducerProperties;
 	private ComboPooledDataSource postgresDs;
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
+
+	private List<UpdateSql> sqlList = new ArrayList<>();
+
+	private volatile Long lastUpdate = System.currentTimeMillis();
+
+	private Integer batchLimit = 1000;
 
 	public PostgresqlProducer(MaxwellContext context) {
 		super(context);
@@ -63,45 +68,176 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	@Override
 	public void push(RowMap r) throws Exception {
+		Long now = System.currentTimeMillis();
 		String output = r.toJSON(outputConfig);
 		if (output == null || !r.shouldOutput(outputConfig)) {
 			this.context.setPosition(r);
+			if (now - lastUpdate > 1000 && sqlList.size() > 0) {
+				this.batchUpdate(sqlList);
+			}
 			return;
 		}
-		//System.out.println(output);
-		try {
-			this.handSql(r, output);
-		} catch (Throwable e) {
-			if (!this.handError(e, r, output)) {
-				LOG.error("handSql error", e);
-			}
+		UpdateSql sql = null;
+		switch (r.getRowType()) {
+			case "insert":
+			case "bootstrap-insert":
+				sql = this.sqlInsert(r);
+				break;
+			case "update":
+				sql = this.sqlUpdate(r);
+				break;
+			case "delete":
+				sql = this.sqlDelete(r);
+				break;
+			default:
+				this.batchUpdate(sqlList);
+				LOG.warn("unrecognizable type:{}", toJSON(r));
+				break;
 		}
-		this.context.setPosition(r);
-	}
-
-	private boolean handError(Throwable e, RowMap r, String output) {
-		if (e == null) {
-			return false;
-		}
-		if (e.getMessage().contains("does not exist")) {
-			try {
-				if ("true".equals(customProducerProperties.getProperty("syncAllTables"))) {
-					List<String> tables = this.getMysqlTables(r.getDatabase());
-					for (String table : tables) {
-						this.syncTable(r.getDatabase(), table);
-					}
+		if (sql != null) {
+			if (sqlList.size() == 0) {
+				sqlList.add(sql);
+			} else {
+				UpdateSql last = sqlList.get(sqlList.size() - 1);
+				if (sql.getSql().equals(last.getSql()) && sqlList.size() < batchLimit) {
+					sqlList.add(sql);
 				} else {
-					this.syncTable(r.getDatabase(), r.getTable());
+					this.batchUpdate(sqlList);
+					sqlList.add(last);
 				}
-				this.handSql(r, output);
-				return true;
-			} catch (Throwable t) {
-				LOG.error("handError fail", t);
 			}
 		}
-		return false;
 	}
 
+	private void batchUpdate(List<UpdateSql> sqlList) {
+		lastUpdate = System.currentTimeMillis();
+		if (sqlList.isEmpty()) {
+			return;
+		}
+		RowMap rowMap = sqlList.get(sqlList.size() - 1).getRowMap();
+		List<Object[]> argsList = sqlList.stream().map(UpdateSql::getArgs).collect(Collectors.toList());
+		// begin
+		try {
+			postgresJdbcTemplate.batchUpdate(sqlList.get(0).getSql(), argsList);
+			sqlList.clear();
+			// commit
+			this.context.setPosition(rowMap);
+		} catch (Exception e) {
+			// rollback
+			if (e.getMessage() != null && e.getMessage().contains("does not exist")) {
+				try {
+					if ("true".equals(customProducerProperties.getProperty("syncAllTables"))) {
+						List<String> tables = this.getMysqlTables(rowMap.getDatabase());
+						for (String table : tables) {
+							this.syncTable(rowMap.getDatabase(), table);
+						}
+					} else {
+						this.syncTable(rowMap.getDatabase(), rowMap.getTable());
+					}
+				} catch (Throwable t) {
+					LOG.error("handError fail", t);
+				}
+				Iterator<UpdateSql> it = sqlList.iterator();
+				while (it.hasNext()) {
+					UpdateSql sql = it.next();
+					this.postgresJdbcTemplate.update(sql.getSql(), sql.getArgs());
+					it.remove();
+					this.context.setPosition(sql.getRowMap());
+				}
+			} else {
+				throw e;
+			}
+		}
+	}
+
+	private UpdateSql sqlInsert(RowMap r) {
+		StringBuilder sqlK = new StringBuilder();
+		StringBuilder sqlV = new StringBuilder();
+		Object[] args = new Object[r.getData().size()];
+		int i = 0;
+		for (Map.Entry<String, Object> e : r.getData().entrySet()) {
+			sqlK.append("\"" + e.getKey() + "\",");
+			sqlV.append("?,");
+			args[i++] = e.getValue();
+		}
+		sqlK.deleteCharAt(sqlK.length() - 1);
+		sqlV.deleteCharAt(sqlV.length() - 1);
+		String sql = String.format(SQL_INSERT, r.getDatabase(), r.getTable(), sqlK, sqlV);
+		if (!r.getPrimaryKeyColumns().isEmpty()) {
+			String extra = String.format(" on conflict(\"%s\") do nothing", StringUtils.join(r.getPrimaryKeyColumns(), "\",\""));
+			sql = sql + extra;
+		}
+		return new UpdateSql(sql, args, r);
+	}
+
+	private UpdateSql sqlUpdate(RowMap r) {
+		if (r.getPrimaryKeyColumns().isEmpty()) {
+			return null;
+		}
+		LinkedHashMap<String, Object> data = r.getData();
+		StringBuilder sqlK = new StringBuilder();
+		StringBuilder sqlPri = new StringBuilder();
+		Object[] args = new Object[data.size() + r.getPrimaryKeyColumns().size()];
+		int i = 0;
+		for (Map.Entry<String, Object> e : data.entrySet()) {
+			sqlK.append("\"" + e.getKey() + "\"=?,");
+			args[i++] = e.getValue();
+		}
+		sqlK.deleteCharAt(sqlK.length() - 1);
+		for (String pri : r.getPrimaryKeyColumns()) {
+			sqlPri.append("\"" + pri + "\"=?,");
+			args[i++] = data.get(pri);
+		}
+		sqlPri.deleteCharAt(sqlPri.length() - 1);
+		String sql = String.format(SQL_UPDATE, r.getDatabase(), r.getTable(), sqlK, sqlPri);
+		return new UpdateSql(sql, args, r);
+	}
+
+	private UpdateSql sqlDelete(RowMap r) {
+		if (r.getPrimaryKeyColumns().isEmpty()) {
+			return null;
+		}
+		LinkedHashMap<String, Object> data = r.getData();
+		StringBuilder sqlPri = new StringBuilder();
+		Object[] args = new Object[r.getPrimaryKeyColumns().size()];
+		int i = 0;
+		for (String pri : r.getPrimaryKeyColumns()) {
+			sqlPri.append("\"" + pri + "\"=? and ");
+			args[i++] = data.get(pri);
+		}
+		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
+		String sql = String.format(SQL_DELETE, r.getDatabase(), r.getTable(), sqlPri);
+		return new UpdateSql(sql, args, r);
+	}
+
+	public String toJSON(RowMap r) {
+		try {
+			return r.toJSON(outputConfig);
+		} catch (Exception e) {
+			LOG.error("toJSON error:{}", r, e);
+		}
+		return null;
+	}
+
+	@Override
+	public StoppableTask getStoppableTask() {
+		return this;
+	}
+
+
+	@Override
+	public void requestStop() throws Exception {
+		if (postgresDs != null) {
+			postgresDs.close();
+		}
+	}
+
+	@Override
+	public void awaitStop(Long timeout) throws TimeoutException {
+
+	}
+
+	///////////// sync table
 	private synchronized void syncTable(String database, String table) {
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
 		List<TableColumn> postgresFields = this.getPostgresFields(database, table);
@@ -179,6 +315,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			String cols = StringUtils.join(e.getValue().stream().map(TableIndex::getColumnName).collect(Collectors.toList()), "\",\"");
 			String sql;
 			if (!e.getValue().get(0).isNonUnique() && "PRIMARY".equals(e.getValue().get(0).getKeyName())) {
+				// TODO check
 				sql = String.format("alter table \"%s\".\"%s\" add primary key (\"%s\");", database, table, cols);
 			} else {
 				String uniq = e.getValue().get(0).isNonUnique() ? "" : "unique";
@@ -231,96 +368,4 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		return count > 0;
 	}
 
-	private void handSql(RowMap r, String output) {
-		switch (r.getRowType()) {
-			case "insert":
-			case "bootstrap-insert":
-				this.sqlInsert(r, output);
-				break;
-			case "update":
-				this.sqlUpdate(r, output);
-				break;
-			case "delete":
-				this.sqlDelete(r, output);
-				break;
-			default:
-				break;
-		}
-	}
-
-	private void sqlInsert(RowMap r, String output) {
-		StringBuilder sqlK = new StringBuilder();
-		StringBuilder sqlV = new StringBuilder();
-		Object[] args = new Object[r.getData().size()];
-		int i = 0;
-		for (Map.Entry<String, Object> e : r.getData().entrySet()) {
-			sqlK.append("\"" + e.getKey() + "\",");
-			sqlV.append("?,");
-			args[i++] = e.getValue();
-		}
-		sqlK.deleteCharAt(sqlK.length() - 1);
-		sqlV.deleteCharAt(sqlV.length() - 1);
-		String sql = String.format(SQL_INSERT, r.getDatabase(), r.getTable(), sqlK, sqlV);
-		try {
-			postgresJdbcTemplate.update(sql, args);
-		} catch (Exception e) {
-			if (e.getMessage().contains("duplicate key value")) {
-				LOG.warn("duplicate key value:{}", output);
-			} else {
-				throw e;
-			}
-		}
-	}
-
-	private void sqlUpdate(RowMap r, String output) {
-		LinkedHashMap<String, Object> data = r.getData();
-		StringBuilder sqlK = new StringBuilder();
-		StringBuilder sqlPri = new StringBuilder();
-		Object[] args = new Object[data.size() + r.getPrimaryKeyColumns().size()];
-		int i = 0;
-		for (Map.Entry<String, Object> e : data.entrySet()) {
-			sqlK.append("\"" + e.getKey() + "\"=?,");
-			args[i++] = e.getValue();
-		}
-		sqlK.deleteCharAt(sqlK.length() - 1);
-		for (String pri : r.getPrimaryKeyColumns()) {
-			sqlPri.append("\"" + pri + "\"=?,");
-			args[i++] = data.get(pri);
-		}
-		sqlPri.deleteCharAt(sqlPri.length() - 1);
-		String sql = String.format(SQL_UPDATE, r.getDatabase(), r.getTable(), sqlK, sqlPri);
-		postgresJdbcTemplate.update(sql, args);
-	}
-
-	private void sqlDelete(RowMap r, String output) {
-		LinkedHashMap<String, Object> data = r.getData();
-		StringBuilder sqlPri = new StringBuilder();
-		Object[] args = new Object[r.getPrimaryKeyColumns().size()];
-		int i = 0;
-		for (String pri : r.getPrimaryKeyColumns()) {
-			sqlPri.append("\"" + pri + "\"=? and ");
-			args[i++] = data.get(pri);
-		}
-		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
-		String sql = String.format(SQL_DELETE, r.getDatabase(), r.getTable(), sqlPri);
-		postgresJdbcTemplate.update(sql, args);
-	}
-
-	@Override
-	public StoppableTask getStoppableTask() {
-		return this;
-	}
-
-
-	@Override
-	public void requestStop() throws Exception {
-		if (postgresDs != null) {
-			postgresDs.close();
-		}
-	}
-
-	@Override
-	public void awaitStop(Long timeout) throws TimeoutException {
-
-	}
 }

@@ -14,9 +14,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
 
 import java.util.*;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -43,12 +47,15 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private ComboPooledDataSource postgresDs;
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
+	private DataSourceTransactionManager transactionManager;
 
 	private List<UpdateSql> sqlList = new ArrayList<>();
 
 	private volatile Long lastUpdate = System.currentTimeMillis();
 
 	private Integer batchLimit = 1000;
+
+	private ReentrantLock lock = new ReentrantLock();
 
 	public PostgresqlProducer(MaxwellContext context) {
 		super(context);
@@ -60,14 +67,34 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		postgresDs.setTestConnectionOnCheckout(true);
 		postgresDs.setMinPoolSize(1);
 		postgresDs.setMaxPoolSize(5);
+		postgresDs.setMaxIdleTime(180);
+		postgresDs.setPreferredTestQuery("select 1");
+		postgresDs.setAcquireRetryAttempts(Integer.MAX_VALUE);
+		postgresDs.setAcquireRetryDelay(3000);
 		postgresJdbcTemplate = new JdbcTemplate(postgresDs, true);
 		C3P0ConnectionPool sourcePool = (C3P0ConnectionPool) context.getMaxwellConnectionPool();
 		mysqlJdbcTemplate = new JdbcTemplate(sourcePool.cpds, true);
+		transactionManager = new DataSourceTransactionManager(postgresDs);
 	}
 
 
 	@Override
 	public void push(RowMap r) throws Exception {
+		if (Thread.currentThread().getName().contains("controller")) {
+			while (!lock.tryLock()) {
+				Thread.sleep(5000);
+			}
+		} else {
+			lock.lock();
+		}
+		try {
+			this.doPush(r);
+		} finally {
+			lock.unlock();
+		}
+	}
+
+	private void doPush(RowMap r) throws Exception {
 		Long now = System.currentTimeMillis();
 		String output = r.toJSON(outputConfig);
 		if (output == null || !r.shouldOutput(outputConfig)) {
@@ -89,6 +116,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			case "delete":
 				sql = this.sqlDelete(r);
 				break;
+			case "bootstrap-start":
+			case "bootstrap-complete":
+				LOG.info("bootstrap:" + this.toJSON(r));
+				break;
 			default:
 				this.batchUpdate(sqlList);
 				LOG.warn("unrecognizable type:{}", toJSON(r));
@@ -103,7 +134,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 					sqlList.add(sql);
 				} else {
 					this.batchUpdate(sqlList);
-					sqlList.add(last);
+					sqlList.add(sql);
 				}
 			}
 		}
@@ -114,16 +145,17 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		if (sqlList.isEmpty()) {
 			return;
 		}
+		LOG.info("batchUpdate size={},sql={}", sqlList.size(), sqlList.get(0).getSql());
 		RowMap rowMap = sqlList.get(sqlList.size() - 1).getRowMap();
 		List<Object[]> argsList = sqlList.stream().map(UpdateSql::getArgs).collect(Collectors.toList());
-		// begin
+		TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
 			postgresJdbcTemplate.batchUpdate(sqlList.get(0).getSql(), argsList);
+			transactionManager.commit(status);
 			sqlList.clear();
-			// commit
 			this.context.setPosition(rowMap);
 		} catch (Exception e) {
-			// rollback
+			transactionManager.rollback(status);
 			if (e.getMessage() != null && e.getMessage().contains("does not exist")) {
 				try {
 					if ("true".equals(customProducerProperties.getProperty("syncAllTables"))) {
@@ -242,11 +274,13 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
 		List<TableColumn> postgresFields = this.getPostgresFields(database, table);
 		List<String> commentSqlList = new ArrayList<>();
+		boolean initData = false;
 		if (postgresFields.isEmpty()) {
 			if (!this.existsPostgresDb(database)) {
 				return;
 			}
 			StringBuilder fieldsB = new StringBuilder();
+			List<String> priKey = new ArrayList<>();
 			for (int i = 0, size = mysqlFields.size(); i < size; i++) {
 				TableColumn column = mysqlFields.get(i);
 				if (i == size - 1) {
@@ -257,12 +291,16 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				if (StringUtils.isNotEmpty(column.getColumnComment())) {
 					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, column.getColumnName(), StringEscapeUtils.escapeSql(column.getColumnComment())));
 				}
+				if (column.isPri()) {
+					priKey.add(column.getColumnName());
+				}
+			}
+			if (!priKey.isEmpty()) {
+				fieldsB.append(String.format(" ,\nprimary key (\"%s\")", StringUtils.join(priKey, "\",\"")));
 			}
 			String sql = String.format(SQL_CREATE, database, table, fieldsB);
 			this.executeDDL(sql);
-			if ("true".equals(customProducerProperties.getProperty("initTableData"))) {
-				this.initTableData(database, table);
-			}
+			initData = "true".equals(customProducerProperties.getProperty("initTableData"));
 		} else {
 			Map<String, TableColumn> mysqlMap = mysqlFields.stream().collect(Collectors.toMap(TableColumn::getColumnName, Function.identity()));
 			Map<String, TableColumn> postgresMap = postgresFields.stream().collect(Collectors.toMap(TableColumn::getColumnName, Function.identity()));
@@ -297,6 +335,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			postgresJdbcTemplate.batchUpdate(commentSqlList.toArray(new String[commentSqlList.size()]));
 		}
 		this.syncIndex(database, table);
+		if (initData) {
+			this.initTableData(database, table);
+		}
 	}
 
 	private void syncIndex(String database, String table) {
@@ -315,13 +356,13 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			String cols = StringUtils.join(e.getValue().stream().map(TableIndex::getColumnName).collect(Collectors.toList()), "\",\"");
 			String sql;
 			if (!e.getValue().get(0).isNonUnique() && "PRIMARY".equals(e.getValue().get(0).getKeyName())) {
-				// TODO check
-				sql = String.format("alter table \"%s\".\"%s\" add primary key (\"%s\");", database, table, cols);
+				// primary key
 			} else {
 				String uniq = e.getValue().get(0).isNonUnique() ? "" : "unique";
 				sql = String.format("create %s index concurrently \"%s\" on \"%s\".\"%s\" (\"%s\");", uniq, postgresIndexName, database, table, cols);
+				this.executeDDL(sql);
 			}
-			this.executeDDL(sql);
+
 		}
 	}
 

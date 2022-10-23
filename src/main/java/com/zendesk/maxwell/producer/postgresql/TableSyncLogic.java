@@ -129,7 +129,7 @@ public class TableSyncLogic {
 		Map<String, List<TableIndex>> mysqlGroup = mysqlIndexes.stream().collect(Collectors.groupingBy(TableIndex::getKeyName));
 		Map<String, List<TableIndex>> postgresGroup = postgresIndexes.stream().collect(Collectors.groupingBy(TableIndex::getKeyName));
 		for (Map.Entry<String, List<TableIndex>> e : mysqlGroup.entrySet()) {
-			String postgresIndexName = table + "_" + e.getKey(); // postgres索引名称要唯一
+			String postgresIndexName = table + "_" + e.getKey(); // The index name should be unique in postgres
 			if (postgresGroup.containsKey(postgresIndexName)) {
 				continue;
 			}

@@ -44,8 +44,8 @@ public class TableColumn {
 				&& (Objects.equals(dataType, c.dataType) || Objects.equals(typeMap.get(dataType), c.dataType))
 				&& Objects.equals(strLen, c.strLen)
 				&& (Objects.equals(columnDefault, c.columnDefault)
-				|| (c.columnDefault != null && c.columnDefault.startsWith("nextval(")) // 自增
-				|| Objects.equals(columnDefault, getPostgresDefaultStr(c.columnDefault))// 自增
+				|| (c.columnDefault != null && c.columnDefault.startsWith("nextval(")) // auto_increment
+				|| Objects.equals(columnDefault, getPostgresDefaultStr(c.columnDefault))// auto_increment
 		)
 				&& Objects.equals(nullAble, c.nullAble)
 				;
@@ -81,7 +81,7 @@ public class TableColumn {
 		if (columnDefault != null) {
 			if (dataType.contains("char")) {
 				tempSql.append(String.format("default '%s' ", StringEscapeUtils.escapeSql(columnDefault)));
-			} else if (type.contains("timestamp") && columnDefault.matches("\\d{4}-[\\s\\S]*")) { // 时间，如 ‘2099-01-01 00:00:00’
+			} else if (type.contains("timestamp") && columnDefault.matches("\\d{4}-[\\s\\S]*")) { // time like ‘2099-01-01 00:00:00’
 				tempSql.append(String.format("default '%s' ", columnDefault));
 			} else if (dataType.contains("bit")) {
 				tempSql.append(String.format("default %s ", Long.valueOf(columnDefault.replaceAll("b|'", ""), 2)));

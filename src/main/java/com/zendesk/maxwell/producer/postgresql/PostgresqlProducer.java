@@ -61,12 +61,6 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		tableSyncLogic = new TableSyncLogic(mysqlJdbcTemplate, postgresJdbcTemplate);
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
-		// 同步表结构 only
-		// 高可用
-		// 配置中心
-		// boot 一致性？
-		// https://blog.csdn.net/xiaolegeaizy/article/details/100743918
-		// timestamp，binary
 	}
 
 	@Override

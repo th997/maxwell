@@ -9,9 +9,9 @@ import com.zendesk.maxwell.row.RowIdentity;
 import com.zendesk.maxwell.row.RowMap;
 import com.zendesk.maxwell.row.RowMap.KeyFormat;
 import com.zendesk.maxwell.schema.ddl.DDLMap;
+import com.zendesk.maxwell.util.TopicInterpolator;
 import com.zendesk.maxwell.util.StoppableTask;
 import com.zendesk.maxwell.util.StoppableTaskState;
-import com.zendesk.maxwell.util.TopicInterpolator;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.kafka.clients.producer.*;
 import org.apache.kafka.common.KafkaException;
@@ -278,7 +278,7 @@ class MaxwellKafkaProducerWorker extends AbstractAsyncProducer implements Runnab
 			if (topic == null) {
 				topic = this.topicInterpolator.generateFromRowMap(r);
 			}
-			LOGGER.debug("context.getConfig().producerPartitionKey = {}", context.getConfig().producerPartitionKey);
+			LOGGER.debug("context.getConfig().producerPartitionKey = {}",  context.getConfig().producerPartitionKey);
 
 			record = new ProducerRecord<>(topic, this.partitioner.kafkaPartition(r, getNumPartitions(topic)), key, value);
 		}
@@ -288,7 +288,7 @@ class MaxwellKafkaProducerWorker extends AbstractAsyncProducer implements Runnab
 	ProducerRecord<String, String> makeFallbackRecord(String fallbackTopic, final RowIdentity pk, Exception reason) throws Exception {
 		String key = pk.toKeyJson(keyFormat);
 		String value = pk.toFallbackValueWithReason(reason.getClass().getSimpleName());
-		String topic = new TopicInterpolator(fallbackTopic).generateFromRowIdentity(pk);
+		String topic = new TopicInterpolator(fallbackTopic).generateFromRowIdentity(pk) ;
 		return new ProducerRecord<>(topic, key, value);
 	}
 

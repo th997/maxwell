@@ -7,6 +7,7 @@ import com.zendesk.maxwell.bootstrap.SynchronousBootstrapper;
 import com.zendesk.maxwell.filtering.Filter;
 import com.zendesk.maxwell.monitoring.*;
 import com.zendesk.maxwell.producer.*;
+import com.zendesk.maxwell.producer.postgresql.PostgresqlProducer;
 import com.zendesk.maxwell.recovery.RecoveryInfo;
 import com.zendesk.maxwell.replication.*;
 import com.zendesk.maxwell.row.RowMap;
@@ -555,6 +556,9 @@ public class MaxwellContext {
 				break;
 			case "none":
 				this.producer = new NoneProducer(this);
+				break;
+			case "postgresql":
+				this.producer = new PostgresqlProducer(this);
 				break;
 			case "custom":
 				// if we're here we missed specifying producer factory

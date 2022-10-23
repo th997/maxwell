@@ -118,6 +118,11 @@ public class MaxwellConfig extends AbstractConfig {
 	public final Properties kafkaProperties;
 
 	/**
+	 * Properties object containing all configuration options beginning with "kafka."
+	 */
+	public final Properties pgProperties;
+
+	/**
 	 * Main kafka topic to produce to
 	 */
 	public String kafkaTopic;
@@ -630,6 +635,7 @@ public class MaxwellConfig extends AbstractConfig {
 	public MaxwellConfig() { // argv is only null in tests
 		this.customProducerProperties = new Properties();
 		this.kafkaProperties = new Properties();
+		this.pgProperties = new Properties();
 		this.replayMode = false;
 		this.replicationMysql = new MaxwellMysqlConfig();
 		this.maxwellMysql = new MaxwellMysqlConfig();
@@ -1121,6 +1127,8 @@ public class MaxwellConfig extends AbstractConfig {
 						continue; // don't override command line bootstrap servers with config files'
 
 					this.kafkaProperties.setProperty(k.replace("kafka.", ""), properties.getProperty(k));
+				} else if (k.startsWith("postgresql.")) {
+					this.pgProperties.setProperty(k.replace("postgresql.", ""), properties.getProperty(k));
 				}
 			}
 		}

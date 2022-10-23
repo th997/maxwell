@@ -375,3 +375,13 @@ kafka.acks=1
 
 # output filename when using the "file" producer
 #output_file=/path/to/file
+
+# postgresql
+#producer=postgresql
+#postgresql.url=jdbc:postgresql://localhost:5432/postgres?stringtype=unspecified&reWriteBatchedInserts=true
+#postgresql.user=postgres
+#postgresql.password=password
+#postgresql.syncDbs=test
+#postgresql.initSchemas=false
+#output_primary_key_columns=true
+#output_ddl=true

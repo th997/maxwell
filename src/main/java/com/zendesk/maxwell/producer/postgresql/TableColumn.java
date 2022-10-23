@@ -25,13 +25,13 @@ public class TableColumn {
 		typeMap.put("tinytext", "text");
 		typeMap.put("mediumtext", "text");
 		typeMap.put("longtext", "text");
-
 	}
 
 	private String columnName;
 	private String dataType;
 	private Long strLen;
 	private Integer numericPrecision;
+	private Integer numericScale;
 	private String columnDefault;
 	private boolean nullAble;
 	private boolean pri;
@@ -66,6 +66,8 @@ public class TableColumn {
 			tempSql.append(String.format("%s(%s) ", type, strLen));
 		} else if (dataType.equals("bit") && numericPrecision != null && numericPrecision == 1) {
 			tempSql.append("int2 ");
+		} else if (dataType.equals("decimal") && numericPrecision != null && numericScale != null) {
+			tempSql.append(String.format("decimal(%s,%s) ", numericPrecision, numericScale));
 		} else if (dataType.equals("bit")) {
 			tempSql.append("int8 ");
 		} else {
@@ -181,5 +183,13 @@ public class TableColumn {
 
 	public void setColumnComment(String columnComment) {
 		this.columnComment = columnComment;
+	}
+
+	public Integer getNumericScale() {
+		return numericScale;
+	}
+
+	public void setNumericScale(Integer numericScale) {
+		this.numericScale = numericScale;
 	}
 }

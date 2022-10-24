@@ -16,6 +16,7 @@ public class TableColumn {
 		typeMap.put("double", "double precision");
 		typeMap.put("char", "bpchar");
 		typeMap.put("enum", "varchar");
+		typeMap.put("set", "varchar");
 		typeMap.put("datetime", "timestamp");
 		typeMap.put("blob", "bytea");
 		typeMap.put("tinyblob", "bytea");
@@ -62,7 +63,7 @@ public class TableColumn {
 				type = "serial";
 			}
 		}
-		if (strLen != null && (dataType.contains("char") || dataType.equals("enum"))) {
+		if (strLen != null && type.contains("char")) {
 			tempSql.append(String.format("%s(%s) ", type, strLen));
 		} else if (dataType.equals("bit") && numericPrecision != null && numericPrecision == 1) {
 			tempSql.append("int2 ");
@@ -79,10 +80,14 @@ public class TableColumn {
 			tempSql.append("not null ");
 		}
 		if (columnDefault != null) {
-			if (dataType.contains("char")) {
+			if (type.contains("char")) {
 				tempSql.append(String.format("default '%s' ", StringEscapeUtils.escapeSql(columnDefault)));
 			} else if (type.contains("timestamp") && columnDefault.matches("\\d{4}-[\\s\\S]*")) { // time like ‘2099-01-01 00:00:00’
-				tempSql.append(String.format("default '%s' ", columnDefault));
+				if (columnDefault.startsWith("0000")) {
+					tempSql.append(String.format("default null "));
+				} else {
+					tempSql.append(String.format("default '%s' ", columnDefault));
+				}
 			} else if (dataType.contains("bit")) {
 				tempSql.append(String.format("default %s ", Long.valueOf(columnDefault.replaceAll("b|'", ""), 2)));
 			} else {

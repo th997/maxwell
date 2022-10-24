@@ -34,6 +34,7 @@ public class TableSyncLogic {
 	private static final String SQL_POSTGRES_COMMENT = "comment on column \"%s\".\"%s\".\"%s\" is '%s'";
 
 	private static final String SQL_GET_POSTGRES_DB = "select count(*) from information_schema.schemata where schema_name =?";
+	private static final String SQL_CREATE_POSTGRES_DB = "create schema %s";
 
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
@@ -59,8 +60,8 @@ public class TableSyncLogic {
 		List<String> commentSqlList = new ArrayList<>();
 		if (postgresFields.isEmpty()) {
 			if (!this.existsPostgresDb(database)) {
-				LOG.warn("database {} not exists", database);
-				return;
+				this.executeDDL(String.format(SQL_CREATE_POSTGRES_DB, database));
+				LOG.info("database {} not exists,created it!", database);
 			}
 			StringBuilder fieldsB = new StringBuilder();
 			List<String> priKey = new ArrayList<>();
@@ -79,7 +80,7 @@ public class TableSyncLogic {
 				}
 			}
 			if (!priKey.isEmpty()) {
-				fieldsB.append(String.format(" ,\nprimary key (\"%s\")", StringUtils.join(priKey, "\",\"")));
+				fieldsB.append(String.format(" ,\r\nprimary key (\"%s\")", StringUtils.join(priKey, "\",\"")));
 			}
 			String sql = String.format(SQL_CREATE, database, table, fieldsB);
 			this.executeDDL(sql);

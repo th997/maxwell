@@ -79,7 +79,6 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Long now = System.currentTimeMillis();
 		String output = r.toJSON(outputConfig);
 		if (output == null || !r.shouldOutput(outputConfig)) {
-			this.context.setPosition(r);
 			if (now - lastUpdate > 1000 && sqlList.size() > 0) {
 				this.batchUpdate(sqlList);
 			}
@@ -140,8 +139,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		try {
 			postgresJdbcTemplate.batchUpdate(sqlList.get(0).getSql(), argsList);
 			transactionManager.commit(status);
-			sqlList.clear();
 			this.context.setPosition(rowMap);
+			sqlList.clear();
 		} catch (Exception e) {
 			transactionManager.rollback(status);
 			if (this.isNeedSyncTableException(e)) {
@@ -150,8 +149,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				while (it.hasNext()) {
 					UpdateSql sql = it.next();
 					this.postgresJdbcTemplate.update(sql.getSql(), sql.getArgs());
-					it.remove();
 					this.context.setPosition(sql.getRowMap());
+					it.remove();
 				}
 			} else {
 				throw e;

@@ -34,7 +34,7 @@ public class TableSyncLogic {
 	private static final String SQL_POSTGRES_COMMENT = "comment on column \"%s\".\"%s\".\"%s\" is '%s'";
 
 	private static final String SQL_GET_POSTGRES_DB = "select count(*) from information_schema.schemata where schema_name =?";
-	private static final String SQL_CREATE_POSTGRES_DB = "create schema %s";
+	private static final String SQL_CREATE_POSTGRES_DB = "create schema \"%s\"";
 
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
@@ -131,6 +131,9 @@ public class TableSyncLogic {
 		Map<String, List<TableIndex>> postgresGroup = postgresIndexes.stream().collect(Collectors.groupingBy(TableIndex::getKeyName));
 		for (Map.Entry<String, List<TableIndex>> e : mysqlGroup.entrySet()) {
 			String postgresIndexName = table + "_" + e.getKey(); // The index name should be unique in postgres
+			if (postgresIndexName.length() > 64) {
+				postgresIndexName = postgresIndexName.substring(0, 63);
+			}
 			if (postgresGroup.containsKey(postgresIndexName)) {
 				continue;
 			}

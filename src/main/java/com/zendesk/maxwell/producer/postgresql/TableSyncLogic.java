@@ -26,7 +26,7 @@ public class TableSyncLogic {
 	private static final String SQL_GET_POSTGRES_INDEX = "select indexname key_name,indexdef index_def from pg_catalog.pg_indexes where schemaname=? and tablename=?";
 	private static final String SQL_GET_MYSQL_INDEX = "show index from %s.%s";
 
-	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,data_type,character_maximum_length str_len,column_default,is_nullable = 'YES' null_able " +
+	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,udt_name data_type,character_maximum_length str_len,column_default,is_nullable = 'YES' null_able " +
 			"from information_schema.columns t where t.table_schema =? and table_name =?";
 	private static final String SQL_GET_MYSQL_FIELD = "select column_name,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' auto_increment " +
 			"from information_schema.columns t where t.table_schema =? and table_name =?";
@@ -98,13 +98,22 @@ public class TableSyncLogic {
 					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
 				}
 			}
-			for (Map.Entry<String, TableColumn> e : diff.entriesInCommon().entrySet()) {
-				TableColumn mysql = mysqlMap.get(e.getKey());
-				TableColumn postgres = postgresMap.get(e.getKey());
+			for (String key : diff.entriesDiffering().keySet()) {
+				TableColumn mysql = mysqlMap.get(key);
+				TableColumn postgres = postgresMap.get(key);
 				if (!mysql.equalsPostgresCol(postgres)) {
-					sql.append("modify " + e.getValue().toPostgresCol() + ",");
-					if (StringUtils.isNotEmpty(e.getValue().getColumnComment())) {
-						commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
+					if (!mysql.isSameType(postgres)) {
+						sql.append(String.format("alter column \"%s\" type %s,", mysql.getColumnName(), mysql.toColType()));
+					}
+					if (!mysql.isSameNullAble(postgres)) {
+						sql.append(String.format("alter column \"%s\" %s not null,", mysql.getColumnName(), mysql.isNullAble() ? "drop" : "set"));
+					}
+					if (!mysql.isSameDefault(postgres)) {
+						String defStr = mysql.toColDefault();
+						sql.append(String.format("alter column \"%s\" %s,", mysql.getColumnName(), defStr.isEmpty() ? "drop default" : "set " + defStr));
+					}
+					if (StringUtils.isNotEmpty(mysql.getColumnComment())) {
+						commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));
 					}
 				}
 			}
@@ -144,7 +153,11 @@ public class TableSyncLogic {
 			} else {
 				String uniq = e.getValue().get(0).isNonUnique() ? "" : "unique";
 				sql = String.format("create %s index concurrently \"%s\" on \"%s\".\"%s\" (\"%s\");", uniq, postgresIndexName, database, table, cols);
-				this.executeDDL(sql);
+				try {
+					this.executeDDL(sql);
+				} catch (Exception ex) {
+					LOG.error("syncIndex error:{}", sql);
+				}
 			}
 
 		}

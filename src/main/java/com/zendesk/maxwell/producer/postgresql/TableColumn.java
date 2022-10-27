@@ -5,7 +5,7 @@ import org.apache.commons.lang.StringEscapeUtils;
 import java.util.*;
 
 public class TableColumn {
-	private static Map<String, String> typeMap = new HashMap<>();
+	private final static Map<String, String> typeMap = new HashMap<>();
 
 	static {
 		typeMap.put("bigint", "int8");
@@ -16,6 +16,7 @@ public class TableColumn {
 		typeMap.put("double", "float8");
 		typeMap.put("float", "float4");
 		typeMap.put("decimal", "numeric");
+		typeMap.put("bit", "int8");
 
 		typeMap.put("char", "bpchar");
 		typeMap.put("enum", "varchar");
@@ -61,11 +62,10 @@ public class TableColumn {
 	}
 
 	public boolean isSameDefault(TableColumn c) {
-		String type = typeMap.getOrDefault(dataType, dataType);
 		return Objects.equals(columnDefault, c.columnDefault)
 				|| (c.columnDefault != null && c.columnDefault.startsWith("nextval(")) // auto_increment
 				|| Objects.equals(columnDefault, getPostgresDefaultStr(c.columnDefault)) // value same
-				|| (type.equals("timestamp") && "0000-00-00 00:00:00".equals(columnDefault) && c.columnDefault == null)
+				|| Objects.equals(getDefaultStr(), getPostgresDefaultStr(c.columnDefault)) // value same
 				;
 	}
 
@@ -73,7 +73,7 @@ public class TableColumn {
 		if (columnDefault == null) {
 			return null;
 		}
-		List<String> chs = Arrays.asList("::character varying", "::bpchar");
+		List<String> chs = Arrays.asList("::character varying", "::bpchar", "::timestamp without time zone");
 		for (String ch : chs) {
 			if (columnDefault.endsWith(ch)) {
 				columnDefault = columnDefault.substring(0, columnDefault.length() - ch.length());
@@ -109,12 +109,8 @@ public class TableColumn {
 		}
 		if (strLen != null && type.contains("char")) {
 			tempSql.append(String.format("%s(%s) ", type, strLen));
-		} else if (dataType.equals("bit") && numericPrecision != null && numericPrecision == 1) {
-			tempSql.append("int2 ");
 		} else if (dataType.equals("decimal") && numericPrecision != null && numericScale != null) {
 			tempSql.append(String.format("decimal(%s,%s) ", numericPrecision, numericScale));
-		} else if (dataType.equals("bit")) {
-			tempSql.append("int8 ");
 		} else {
 			tempSql.append(type + " ");
 		}
@@ -130,24 +126,28 @@ public class TableColumn {
 	}
 
 	public String toColDefault() {
-		StringBuilder tempSql = new StringBuilder();
+		String v = this.getDefaultStr();
+		return v == null ? "" : String.format("default %s ", v);
+	}
+
+	public String getDefaultStr() {
 		String type = typeMap.getOrDefault(dataType, dataType);
 		if (columnDefault != null) {
 			if (type.contains("char")) {
-				tempSql.append(String.format("default '%s' ", StringEscapeUtils.escapeSql(columnDefault)));
+				return String.format("'%s'", StringEscapeUtils.escapeSql(columnDefault));
 			} else if (type.contains("timestamp") && columnDefault.matches("\\d{4}-[\\s\\S]*")) { // time like ‘2099-01-01 00:00:00’
-				if (columnDefault.startsWith("0000")) {
-					tempSql.append(String.format("default null "));
+				if (!columnDefault.startsWith("0000")) {
+					return String.format("'%s'", columnDefault);
 				} else {
-					tempSql.append(String.format("default '%s' ", columnDefault));
+					return null;
 				}
 			} else if (dataType.contains("bit")) {
-				tempSql.append(String.format("default %s ", Long.valueOf(columnDefault.replaceAll("b|'", ""), 2)));
+				return Long.valueOf(columnDefault.replaceAll("b|'", ""), 2).toString();
 			} else {
-				tempSql.append(String.format("default %s ", columnDefault));
+				return columnDefault;
 			}
 		}
-		return tempSql.toString();
+		return null;
 	}
 
 	public String getColumnName() {

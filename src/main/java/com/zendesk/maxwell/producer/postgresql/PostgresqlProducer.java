@@ -66,11 +66,13 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	@Override
 	public void push(RowMap r) throws Exception {
 		if (initSchemas) {
-			for (String db : syncDbs) {
-				tableSyncLogic.syncAllTables(db);
+			synchronized (this) {
+				for (String db : syncDbs) {
+					tableSyncLogic.syncAllTables(db);
+				}
+				LOG.info("initSchemas finish, exit...");
+				System.exit(0);
 			}
-			LOG.info("initSchemas finish, exit...");
-			System.exit(0);
 		}
 		this.doPush(r);
 	}
@@ -101,6 +103,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				break;
 			case "table-create":
 			case "table-alter":
+			case "ddl":
 				tableSyncLogic.syncTable(r.getDatabase(), r.getTable());
 				break;
 			case "bootstrap-start":
@@ -240,13 +243,6 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			LOG.error("toJSON error:{}", r, e);
 		}
 		return null;
-	}
-
-	private void initTableData(String database, String table) {
-		String sqlCount = String.format("select count(*) from `%s`.`%s`", database, table);
-		Long rows = mysqlJdbcTemplate.queryForObject(sqlCount, Long.class);
-		String sql = "insert into `bootstrap` (database_name, table_name, where_clause, total_rows, client_id, comment) values(?, ?, ?, ?, ?, ?)";
-		mysqlJdbcTemplate.update(sql, database, table, null, rows, "maxwell", "postgres");
 	}
 
 	@Override

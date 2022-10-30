@@ -49,6 +49,7 @@ public class TableSyncLogic {
 		List<String> tables = this.getMysqlTables(database);
 		for (String table : tables) {
 			this.syncTable(database, table);
+			//this.initTableData(database, table);
 		}
 		LOG.info("syncAllTables end:{}", database);
 	}
@@ -197,5 +198,12 @@ public class TableSyncLogic {
 	public boolean existsPostgresDb(String database) {
 		Integer count = postgresJdbcTemplate.queryForObject(SQL_GET_POSTGRES_DB, Integer.class, database);
 		return count > 0;
+	}
+
+	private void initTableData(String database, String table) {
+		String sqlCount = String.format("select count(*) from `%s`.`%s`", database, table);
+		Long rows = mysqlJdbcTemplate.queryForObject(sqlCount, Long.class);
+		String sql = "insert into `bootstrap` (database_name, table_name, where_clause, total_rows, client_id, comment) values(?, ?, ?, ?, ?, ?)";
+		mysqlJdbcTemplate.update(sql, database, table, null, rows, "maxwell", "postgres");
 	}
 }

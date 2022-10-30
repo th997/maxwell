@@ -20,13 +20,15 @@ public class TableColumn {
 
 		typeMap.put("char", "bpchar");
 		typeMap.put("enum", "varchar");
-		typeMap.put("set", "varchar");
+		typeMap.put("set", "text");
 		typeMap.put("tinytext", "text");
 		typeMap.put("mediumtext", "text");
 		typeMap.put("longtext", "text");
 
 		typeMap.put("datetime", "timestamp");
 
+		// blob/binary will be base64 encoded and does not support synchronization for now.
+		// https://maxwells-daemon.io/dataformat/#blob-binary-encoded-strings
 		typeMap.put("blob", "bytea");
 		typeMap.put("tinyblob", "bytea");
 		typeMap.put("mediumblob", "bytea");

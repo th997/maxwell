@@ -77,7 +77,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		this.doPush(r);
 	}
 
-	private void doPush(RowMap r) throws Exception {
+	private synchronized void doPush(RowMap r) throws Exception {
 		Long now = System.currentTimeMillis();
 		String output = r.toJSON(outputConfig);
 		if (output == null || !r.shouldOutput(outputConfig)) {

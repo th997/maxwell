@@ -75,7 +75,7 @@ public class TableColumn {
 		if (columnDefault == null) {
 			return null;
 		}
-		List<String> chs = Arrays.asList("::character varying", "::bpchar", "::timestamp without time zone");
+		List<String> chs = Arrays.asList("::character varying", "::bpchar", "::timestamp without time zone", "::integer");
 		for (String ch : chs) {
 			if (columnDefault.endsWith(ch)) {
 				columnDefault = columnDefault.substring(0, columnDefault.length() - ch.length());

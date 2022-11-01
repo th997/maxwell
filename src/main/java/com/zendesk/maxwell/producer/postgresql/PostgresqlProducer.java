@@ -211,10 +211,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		for (String pri : r.getPrimaryKeyColumns()) {
-			sqlPri.append("\"" + pri + "\"=?,");
+			sqlPri.append("\"" + pri + "\"=? and ");
 			args[i++] = data.get(pri);
 		}
-		sqlPri.deleteCharAt(sqlPri.length() - 1);
+		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		String sql = String.format(SQL_UPDATE, r.getDatabase(), r.getTable(), sqlK, sqlPri);
 		return new UpdateSql(sql, args, r);
 	}

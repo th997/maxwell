@@ -24,7 +24,7 @@ public class TableSyncLogic {
 	private static final String SQL_CREATE = "create table \"%s\".\"%s\" (%s)";
 
 	private static final String SQL_GET_POSTGRES_INDEX = "select indexname key_name,indexdef index_def from pg_catalog.pg_indexes where schemaname=? and tablename=?";
-	private static final String SQL_GET_MYSQL_INDEX = "show index from %s.%s";
+	private static final String SQL_GET_MYSQL_INDEX = "show index from `%s`.`%s`";
 
 	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,udt_name data_type,character_maximum_length str_len,column_default,is_nullable = 'YES' null_able " +
 			"from information_schema.columns t where t.table_schema =? and table_name =?";
@@ -157,7 +157,7 @@ public class TableSyncLogic {
 				try {
 					this.executeDDL(sql);
 				} catch (Exception ex) {
-					LOG.error("syncIndex error:{}", sql);
+					LOG.warn("syncIndex fail:{}", sql);
 				}
 			}
 

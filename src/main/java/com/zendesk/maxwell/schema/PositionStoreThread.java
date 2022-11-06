@@ -78,7 +78,7 @@ public class PositionStoreThread extends RunLoopProcess implements Runnable {
 		BinlogPosition currentBinlog = currentPosition.getBinlogPosition();
 		if ( !lastHeartbeatSentFrom.getFile().equals(currentBinlog.getFile()) )
 			return true;
-		if ( currentBinlog.getOffset() - lastHeartbeatSentFrom.getOffset() > 1000 ) {
+		if ( currentBinlog.getOffset() - lastHeartbeatSentFrom.getOffset() > 3000 ) {
 			return true;
 		}
 
@@ -114,10 +114,9 @@ public class PositionStoreThread extends RunLoopProcess implements Runnable {
 		if ( context.isMariaDB() && position != null ) {
 			BinlogPosition bp = p.getBinlogPosition();
 			if ( bp.getGtid() != null ) {
-				position = position.addGtid(bp.getGtid());
-			} else {
-				position = p;
+				bp.mergeGtids(position.getBinlogPosition().getGtidSet());
 			}
+			position = p;
 		} else if ( position == null || p.newerThan(position) ) {
 			position = p;
 			if (storedPosition == null) {

@@ -21,7 +21,7 @@ public class BinlogPosition implements Serializable {
 	private static final String POSITION_COLUMN = "Position";
 	private static final String GTID_COLUMN = "Executed_Gtid_Set";
 
-	private final String gtidSetStr;
+	private String gtidSetStr;
 	private final String gtid;
 	private final long offset;
 	private final Long fileNumber;
@@ -87,13 +87,28 @@ public class BinlogPosition implements Serializable {
 		return gtidSetStr;
 	}
 
-	public BinlogPosition addGtid(String gtid) {
+	public BinlogPosition addGtid(String gtid, long offset, String file) {
 		GtidSet set = this.getGtidSet();
+		if ( set == null )
+			return new BinlogPosition(offset, file);
+
 		set.add(gtid);
-		return new BinlogPosition(set.toSeenString(), gtid, this.offset, this.file);
+		return new BinlogPosition(set.toSeenString(), gtid, offset, file);
+	}
+
+	public void mergeGtids(GtidSet seenSet) {
+		if ( seenSet == null ) {
+			this.gtidSetStr = this.gtid;
+		} else {
+			seenSet.add(this.getGtid());
+			this.gtidSetStr = seenSet.toSeenString();
+		}
 	}
 
 	public GtidSet getGtidSet() {
+		if ( gtidSetStr == null )
+			return null;
+
 		if ( MariadbGtidSet.isMariaGtidSet(gtidSetStr) )
 			return new MariadbGtidSet((gtidSetStr));
 		else
@@ -174,4 +189,5 @@ public class BinlogPosition implements Serializable {
 			return Long.valueOf(offset).hashCode();
 		}
 	}
+
 }

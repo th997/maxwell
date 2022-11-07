@@ -34,6 +34,8 @@ public class TableSyncLogic {
 	private static final String SQL_GET_POSTGRES_DB = "select count(*) from information_schema.schemata where schema_name =?";
 	private static final String SQL_CREATE_POSTGRES_DB = "create schema \"%s\"";
 
+	private static final String SQL_DROP_POSTGRES_TABLE = "drop table if exists \"%s\".\"%s\"";
+
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
 
@@ -52,9 +54,13 @@ public class TableSyncLogic {
 		LOG.info("syncAllTables end:{}", database);
 	}
 
-	public synchronized void syncTable(String database, String table) {
+	public synchronized boolean syncTable(String database, String table) {
 		LOG.info("syncTable start:{}.{}", database, table);
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
+		if (mysqlFields.isEmpty()) {
+			postgresJdbcTemplate.execute(String.format(SQL_DROP_POSTGRES_TABLE, database, table));
+			return false;
+		}
 		List<TableColumn> postgresFields = this.getPostgresFields(database, table);
 		List<String> commentSqlList = new ArrayList<>();
 		if (postgresFields.isEmpty()) {
@@ -127,6 +133,7 @@ public class TableSyncLogic {
 		}
 		this.syncIndex(database, table);
 		LOG.info("syncTable end:{}.{}", database, table);
+		return true;
 	}
 
 	private void syncIndex(String database, String table) {

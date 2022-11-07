@@ -169,7 +169,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			LOG.warn("batchUpdate fail size={},merge={},time={},sql={}", sqlList.size(), mergeUpdateList != null, System.currentTimeMillis() - lastUpdate, updateSql.getSql());
 			transactionManager.rollback(status);
 			if (this.isNeedSyncTableException(e)) {
-				tableSyncLogic.syncTable(rowMap.getDatabase(), rowMap.getTable());
+				boolean exists = tableSyncLogic.syncTable(rowMap.getDatabase(), rowMap.getTable());
+				if (!exists) {
+					return;
+				}
 				Iterator<UpdateSql> it = sqlList.iterator();
 				while (it.hasNext()) {
 					UpdateSql sql = it.next();

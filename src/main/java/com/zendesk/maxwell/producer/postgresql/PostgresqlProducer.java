@@ -16,7 +16,6 @@ import org.springframework.transaction.support.DefaultTransactionDefinition;
 
 import java.util.*;
 import java.util.concurrent.TimeoutException;
-import java.util.stream.Collectors;
 
 public class PostgresqlProducer extends AbstractProducer implements StoppableTask {
 	static final Logger LOG = LoggerFactory.getLogger(PostgresqlProducer.class);
@@ -32,14 +31,15 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private DataSourceTransactionManager transactionManager;
 	private TableSyncLogic tableSyncLogic;
 
-	private List<UpdateSql> sqlList = new ArrayList<>();
+	private LinkedList<UpdateSql> sqlList = new LinkedList<>();
 	private volatile Long lastUpdate = System.currentTimeMillis();
-	private Integer batchLimit = 1000;
+	private Integer batchLimit;
+	private Integer batchTransactionLimit;
 
 	private Set<String> syncDbs;
+	private Set<String> asyncCommitTables;
 
 	private boolean initSchemas;
-	private boolean mergeUpdateSql;
 
 	public PostgresqlProducer(MaxwellContext context) {
 		super(context);
@@ -61,8 +61,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		transactionManager = new DataSourceTransactionManager(postgresDs);
 		tableSyncLogic = new TableSyncLogic(mysqlJdbcTemplate, postgresJdbcTemplate);
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
+		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
-		mergeUpdateSql = "true".equalsIgnoreCase(pgProperties.getProperty("mergeUpdateSql"));
+		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
+		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
 	}
 
 	@Override
@@ -83,7 +85,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Long now = System.currentTimeMillis();
 		String output = r.toJSON(outputConfig);
 		if (output == null || !r.shouldOutput(outputConfig)) {
-			if (now - lastUpdate > 1000 && sqlList.size() > 0) {
+			if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
 				this.batchUpdate(sqlList);
 			}
 			return;
@@ -108,6 +110,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			case "ddl":
 				this.batchUpdate(sqlList);
 				if (r.getTable() != null) {
+					LOG.info("ddl={}", this.toJSON(r));
 					tableSyncLogic.syncTable(r.getDatabase(), r.getTable());
 				} else {
 					LOG.warn("unrecognizable ddl:{}", toJSON(r));
@@ -123,52 +126,47 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				break;
 		}
 		if (sql != null) {
-			if (sqlList.size() == 0) {
-				sqlList.add(sql);
+			if (sqlList.size() == 0 || sqlList.size() < batchLimit) {
+				// wait batch update
+				this.addSql(sql);
 			} else {
-				UpdateSql last = sqlList.get(sqlList.size() - 1);
-				if (sql.getSql().equals(last.getSql()) && sqlList.size() < batchLimit) {
-					sqlList.add(sql);
-				} else {
+				if (sqlList.getLast().getRowMap().isTXCommit() || sqlList.size() > batchTransactionLimit) {
+					// need commit or wait reached transaction max size
 					this.batchUpdate(sqlList);
-					sqlList.add(sql);
 				}
+				this.addSql(sql);
 			}
 		}
 	}
 
-	private void batchUpdate(List<UpdateSql> sqlList) {
+	private void addSql(UpdateSql sql) {
+		sqlList.add(sql);
+	}
+
+	private void batchUpdate(LinkedList<UpdateSql> sqlList) {
 		lastUpdate = System.currentTimeMillis();
 		if (sqlList.isEmpty()) {
 			return;
 		}
-		List<UpdateSql> mergeUpdateList = this.mergeUpdateSql(sqlList);
-		UpdateSql updateSql = sqlList.get(sqlList.size() - 1);
-		RowMap rowMap = updateSql.getRowMap();
-		List<Object[]> argsList = null;
-		if (mergeUpdateList != null) {
-			argsList = mergeUpdateList.stream().map(UpdateSql::getArgs).collect(Collectors.toList());
-		} else {
-			argsList = sqlList.stream().map(UpdateSql::getArgs).collect(Collectors.toList());
-		}
+		RowMap rowMap = sqlList.getLast().getRowMap();
+		UpdateSql updateSql = sqlList.getLast();
+		List<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
 		TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
-			if (mergeUpdateList != null) {
-				postgresJdbcTemplate.update(mergeUpdateList.get(0).getSql(), mergeUpdateList.get(0).getArgs());
-				if (mergeUpdateList.size() > 1) {
-					postgresJdbcTemplate.batchUpdate(mergeUpdateList.get(1).getSql(), argsList.subList(1, argsList.size()));
-				}
-			} else {
-				postgresJdbcTemplate.batchUpdate(sqlList.get(0).getSql(), argsList);
+			if (groupList.size() == 1 && asyncCommitTables.contains(rowMap.getTable())) {
+				postgresJdbcTemplate.execute("set local synchronous_commit = off");
+			}
+			for (UpdateSqlGroup group : groupList) {
+				this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 			}
 			transactionManager.commit(status);
 			this.context.setPosition(rowMap);
-			LOG.info("batchUpdate size={},merge={},time={},sql={}", sqlList.size(), mergeUpdateList != null, System.currentTimeMillis() - lastUpdate, updateSql.getSql());
+			LOG.info("batchUpdate size={},mergeSize={},time={},sql={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate, updateSql.getSql());
 			sqlList.clear();
 		} catch (Exception e) {
-			LOG.warn("batchUpdate fail size={},merge={},time={},sql={}", sqlList.size(), mergeUpdateList != null, System.currentTimeMillis() - lastUpdate, updateSql.getSql());
+			LOG.info("batchUpdate fail size={},mergeSize={},time={},sql={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate, updateSql.getSql());
 			transactionManager.rollback(status);
-			if (this.isNeedSyncTableException(e)) {
+			if (this.isMsgException(e, "does not exist")) {
 				boolean exists = tableSyncLogic.syncTable(rowMap.getDatabase(), rowMap.getTable());
 				if (!exists) {
 					return;
@@ -180,19 +178,69 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 					this.context.setPosition(sql.getRowMap());
 					it.remove();
 				}
+			} else if (this.isMsgException(e, "duplicate key value")) {
+				Iterator<UpdateSql> it = sqlList.iterator();
+				while (it.hasNext()) {
+					UpdateSql sql = it.next();
+					try {
+						this.postgresJdbcTemplate.update(sql.getSql(), sql.getArgs());
+					} catch (Exception e1) {
+						if (!this.isMsgException(e1, "duplicate key value")) {
+							throw e;
+						}
+						LOG.warn("duplicate key={}", toJSON(sql.getRowMap()));
+					}
+					this.context.setPosition(sql.getRowMap());
+					it.remove();
+				}
 			} else {
 				throw e;
 			}
 		}
 	}
 
-	private boolean isNeedSyncTableException(Exception e) {
+	/**
+	 * Consecutive and identical sql's are divided into the same group
+	 *
+	 * @param sqlList
+	 * @return
+	 */
+	private LinkedList<UpdateSqlGroup> groupMergeSql(LinkedList<UpdateSql> sqlList) {
+		LinkedList<UpdateSqlGroup> ret = new LinkedList<>();
+		for (UpdateSql sql : sqlList) {
+			UpdateSqlGroup group;
+			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql())) {
+				group = new UpdateSqlGroup(sql.getSql());
+				ret.add(group);
+			} else {
+				group = ret.getLast();
+			}
+			group.setLastRowMap(sql.getRowMap());
+			group.getArgsList().add(sql.getArgs());
+		}
+		for (UpdateSqlGroup group : ret) {
+			RowMap r = group.getLastRowMap();
+			if ("delete".equals(r.getRowType()) && r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
+				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
+				Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
+				String in = String.format("\"%s\" in (%s)", r.getPrimaryKeyColumns().get(0), String.join(",", Collections.nCopies(ids.length, "?")));
+				String sql = String.format(SQL_DELETE, r.getDatabase(), r.getTable(), in);
+				List<Object[]> argsList = new ArrayList<>();
+				argsList.add(ids);
+				group.setSql(sql);
+				group.setArgsList(argsList);
+			}
+		}
+		return ret;
+	}
+
+	private boolean isMsgException(Exception e, String msg) {
 		Throwable cause = e;
 		while (true) {
 			if (cause == null) {
 				break;
 			}
-			if (cause.getMessage() != null && cause.getMessage().contains("does not exist")) {
+			if (cause.getMessage() != null && cause.getMessage().contains(msg)) {
 				return true;
 			} else {
 				cause = cause.getCause();
@@ -227,15 +275,14 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			return null;
 		}
 		LinkedHashMap<String, Object> data = r.getData();
+		LinkedHashMap<String, Object> oldData = r.getOldData();
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlPri = new StringBuilder();
-		Object[] args = new Object[data.size()];
+		Object[] args = new Object[data.size() + keys.size()];
 		int i = 0;
 		for (Map.Entry<String, Object> e : data.entrySet()) {
-			if (!keys.contains(e.getKey())) {
-				sqlK.append("\"" + e.getKey() + "\"=?,");
-				args[i++] = e.getValue();
-			}
+			sqlK.append("\"" + e.getKey() + "\"=?,");
+			args[i++] = e.getValue();
 		}
 		if (sqlK.length() == 0) {
 			return null;
@@ -243,7 +290,11 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		for (String pri : keys) {
 			sqlPri.append("\"" + pri + "\"=? and ");
-			args[i++] = data.get(pri);
+			Object priValue = oldData.get(pri);
+			if (priValue == null) {
+				priValue = data.get(pri);
+			}
+			args[i++] = priValue;
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		String sql = String.format(SQL_UPDATE, r.getDatabase(), r.getTable(), sqlK, sqlPri);
@@ -266,38 +317,6 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		String sql = String.format(SQL_DELETE, r.getDatabase(), r.getTable(), sqlPri);
 		return new UpdateSql(sql, args, r);
 	}
-
-	/**
-	 * merge sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
-	 * merge sql  "update table set xx=? where id=? ..." to "delete from table where id in (?,?...) and insert into table(xx) values(?...),(?...)
-	 *
-	 * @param sqlList
-	 */
-	private List<UpdateSql> mergeUpdateSql(List<UpdateSql> sqlList) {
-		if (sqlList.size() < 2) {
-			return null;
-		}
-		RowMap r = sqlList.get(sqlList.size() - 1).getRowMap();
-		if (!"delete".equals(r.getRowType()) && !"update".equals(r.getRowType()) || r.getPrimaryKeyColumns().size() != 1) {
-			return null;
-		}
-		if (!mergeUpdateSql && "update".equals(r.getRowType())) {
-			return null;
-		}
-		List<UpdateSql> mergeUpdateList = new ArrayList<>(sqlList.size() + 1);
-		List<Object> ids = sqlList.stream().map(sql -> sql.getArgs()[sql.getArgs().length - 1]).collect(Collectors.toList());
-		String in = String.format("\"%s\" in (%s)", r.getPrimaryKeyColumns().get(0), String.join(",", Collections.nCopies(ids.size(), "?")));
-		String sql = String.format(SQL_DELETE, r.getDatabase(), r.getTable(), in);
-		UpdateSql delete = new UpdateSql(sql, ids.toArray(new Object[ids.size()]), r);
-		mergeUpdateList.add(delete);
-		if ("update".equals(r.getRowType())) {
-			for (UpdateSql updateSql : sqlList) {
-				mergeUpdateList.add(this.sqlInsert(updateSql.getRowMap()));
-			}
-		}
-		return mergeUpdateList;
-	}
-
 
 	public String toJSON(RowMap r) {
 		try {

@@ -58,7 +58,7 @@ public class TableSyncLogic {
 		LOG.info("syncTable start:{}.{}", database, table);
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
 		if (mysqlFields.isEmpty()) {
-			postgresJdbcTemplate.execute(String.format(SQL_DROP_POSTGRES_TABLE, database, table));
+			this.executeDDL(String.format(SQL_DROP_POSTGRES_TABLE, database, table));
 			return false;
 		}
 		List<TableColumn> postgresFields = this.getPostgresFields(database, table);
@@ -98,6 +98,7 @@ public class TableSyncLogic {
 				sql.append("drop column \"" + e.getKey() + "\",");
 			}
 			for (Map.Entry<String, TableColumn> e : diff.entriesOnlyOnLeft().entrySet()) {
+				e.getValue().setNullAble(true);
 				sql.append("add " + e.getValue().toPostgresCol() + ",");
 				if (StringUtils.isNotEmpty(e.getValue().getColumnComment())) {
 					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
@@ -113,7 +114,7 @@ public class TableSyncLogic {
 					if (!mysql.isSameNullAble(postgres)) {
 						sql.append(String.format("alter column \"%s\" %s not null,", mysql.getColumnName(), mysql.isNullAble() ? "drop" : "set"));
 					}
-					if (!mysql.isSameDefault(postgres)) {
+					if (!mysql.isSameDefault(postgres) && mysql.isNullAble()) {
 						String defStr = mysql.toColDefault();
 						sql.append(String.format("alter column \"%s\" %s,", mysql.getColumnName(), defStr.isEmpty() ? "drop default" : "set " + defStr));
 					}

@@ -118,7 +118,7 @@ public class MaxwellConfig extends AbstractConfig {
 	public final Properties kafkaProperties;
 
 	/**
-	 * Properties object containing all configuration options beginning with "kafka."
+	 * Properties object containing all configuration options beginning with "postgres."
 	 */
 	public final Properties pgProperties;
 

@@ -385,3 +385,5 @@ kafka.acks=1
 #postgresql.initSchemas=false
 #output_primary_key_columns=true
 #output_ddl=true
+#gtid_mode=true
+#output_null_zerodates=true

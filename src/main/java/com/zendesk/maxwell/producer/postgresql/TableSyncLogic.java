@@ -111,10 +111,10 @@ public class TableSyncLogic {
 					if (!mysql.isSameType(postgres)) {
 						sql.append(String.format("alter column \"%s\" type %s,", mysql.getColumnName(), mysql.toColType()));
 					}
-					if (!mysql.isSameNullAble(postgres)) {
+					if (!mysql.isSameNullAble(postgres) && mysql.isNullAble()) {
 						sql.append(String.format("alter column \"%s\" %s not null,", mysql.getColumnName(), mysql.isNullAble() ? "drop" : "set"));
 					}
-					if (!mysql.isSameDefault(postgres) && mysql.isNullAble()) {
+					if (!mysql.isSameDefault(postgres)) {
 						String defStr = mysql.toColDefault();
 						sql.append(String.format("alter column \"%s\" %s,", mysql.getColumnName(), defStr.isEmpty() ? "drop default" : "set " + defStr));
 					}

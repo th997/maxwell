@@ -126,16 +126,11 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				break;
 		}
 		if (sql != null) {
-			if (sqlList.size() == 0 || sqlList.size() < batchLimit) {
-				// wait batch update
-				this.addSql(sql);
-			} else {
-				if (sqlList.getLast().getRowMap().isTXCommit() || sqlList.size() > batchTransactionLimit) {
-					// need commit or wait reached transaction max size
-					this.batchUpdate(sqlList);
-				}
-				this.addSql(sql);
+			if (sqlList.size() >= batchLimit && sqlList.getLast().getRowMap().isTXCommit() || sqlList.size() >= batchTransactionLimit) {
+				// need batch commit or reached max batch size
+				this.batchUpdate(sqlList);
 			}
+			this.addSql(sql);
 		}
 	}
 
@@ -148,8 +143,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		if (sqlList.isEmpty()) {
 			return;
 		}
-		RowMap rowMap = sqlList.getLast().getRowMap();
 		UpdateSql updateSql = sqlList.getLast();
+		RowMap rowMap = updateSql.getRowMap();
 		List<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
 		TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
@@ -167,17 +162,21 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			LOG.info("batchUpdate fail size={},mergeSize={},time={},sql={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate, updateSql.getSql());
 			transactionManager.rollback(status);
 			if (this.isMsgException(e, "does not exist")) {
-				boolean exists = tableSyncLogic.syncTable(rowMap.getDatabase(), rowMap.getTable());
-				if (!exists) {
-					return;
+				for (UpdateSqlGroup group : groupList) {
+					try {
+						this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+					} catch (Exception e1) {
+						if (this.isMsgException(e1, "does not exist")) {
+							if (tableSyncLogic.syncTable(rowMap.getDatabase(), rowMap.getTable())) {
+								this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+							}
+						} else {
+							throw e1;
+						}
+					}
 				}
-				Iterator<UpdateSql> it = sqlList.iterator();
-				while (it.hasNext()) {
-					UpdateSql sql = it.next();
-					this.postgresJdbcTemplate.update(sql.getSql(), sql.getArgs());
-					this.context.setPosition(sql.getRowMap());
-					it.remove();
-				}
+				this.context.setPosition(rowMap);
+				sqlList.clear();
 			} else if (this.isMsgException(e, "duplicate key value")) {
 				Iterator<UpdateSql> it = sqlList.iterator();
 				while (it.hasNext()) {
@@ -186,7 +185,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 						this.postgresJdbcTemplate.update(sql.getSql(), sql.getArgs());
 					} catch (Exception e1) {
 						if (!this.isMsgException(e1, "duplicate key value")) {
-							throw e;
+							throw e1;
 						}
 						LOG.warn("duplicate key={}", toJSON(sql.getRowMap()));
 					}
@@ -344,6 +343,4 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	public void awaitStop(Long timeout) throws TimeoutException {
 
 	}
-
-
 }

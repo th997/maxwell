@@ -27,7 +27,8 @@ public class TableSyncLogic {
 	private static final String SQL_GET_MYSQL_INDEX = "show index from `%s`.`%s`";
 
 	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,udt_name data_type,character_maximum_length str_len,column_default,is_nullable = 'YES' null_able from information_schema.columns t where t.table_schema =? and table_name =?";
-	private static final String SQL_GET_MYSQL_FIELD = "select column_name,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' auto_increment from information_schema.columns t where t.table_schema =? and table_name =?";
+	private static final String SQL_GET_MYSQL_FIELD = "select column_name,column_type,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' auto_increment from information_schema.columns t where t.table_schema =? and table_name =?";
+	private static final String SQL_GET_MYSQL_TABLE = "select table_name from information_schema.tables where table_type != 'VIEW' and table_schema =?";
 
 	private static final String SQL_POSTGRES_COMMENT = "comment on column \"%s\".\"%s\".\"%s\" is '%s'";
 
@@ -42,16 +43,6 @@ public class TableSyncLogic {
 	public TableSyncLogic(JdbcTemplate mysqlJdbcTemplate, JdbcTemplate postgresJdbcTemplate) {
 		this.mysqlJdbcTemplate = mysqlJdbcTemplate;
 		this.postgresJdbcTemplate = postgresJdbcTemplate;
-	}
-
-	public synchronized void syncAllTables(String database) {
-		LOG.info("syncAllTables start:{}", database);
-		List<String> tables = this.getMysqlTables(database);
-		for (String table : tables) {
-			this.syncTable(database, table);
-			//this.initTableData(database, table);
-		}
-		LOG.info("syncAllTables end:{}", database);
 	}
 
 	public synchronized boolean syncTable(String database, String table) {
@@ -166,7 +157,6 @@ public class TableSyncLogic {
 					LOG.warn("syncIndex fail:{}", sql);
 				}
 			}
-
 		}
 	}
 
@@ -176,8 +166,7 @@ public class TableSyncLogic {
 	}
 
 	public List<String> getMysqlTables(String tableSchema) {
-		String sql = "select table_name from information_schema.tables where table_schema =?";
-		return mysqlJdbcTemplate.queryForList(sql, String.class, tableSchema);
+		return mysqlJdbcTemplate.queryForList(SQL_GET_MYSQL_TABLE, String.class, tableSchema);
 	}
 
 	public List<TableColumn> getMysqlFields(String tableSchema, String tableName) {
@@ -206,10 +195,4 @@ public class TableSyncLogic {
 		return count > 0;
 	}
 
-	private void initTableData(String database, String table) {
-		String sqlCount = String.format("select count(*) from `%s`.`%s`", database, table);
-		Long rows = mysqlJdbcTemplate.queryForObject(sqlCount, Long.class);
-		String sql = "insert into `bootstrap` (database_name, table_name, where_clause, total_rows, client_id, comment) values(?, ?, ?, ?, ?, ?)";
-		mysqlJdbcTemplate.update(sql, database, table, null, rows, "maxwell", "postgres");
-	}
 }

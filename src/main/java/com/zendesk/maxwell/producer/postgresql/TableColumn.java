@@ -34,10 +34,12 @@ public class TableColumn {
 		typeMap.put("mediumblob", "bytea");
 		typeMap.put("longblob", "bytea");
 		typeMap.put("binary", "bytea");
+		typeMap.put("varbinary", "bytea");
 
 	}
 
 	private String columnName;
+	private String columnType;
 	private String dataType;
 	private Long strLen;
 	private Integer numericPrecision;
@@ -55,12 +57,13 @@ public class TableColumn {
 
 	public boolean isSameType(TableColumn c) {
 		return Objects.equals(columnName, c.columnName)
-				&& (Objects.equals(dataType, c.dataType) || Objects.equals(typeMap.get(dataType), c.dataType))
+				&& (Objects.equals(dataType, c.dataType) || Objects.equals(this.typeGet(dataType), c.dataType))
 				&& (Objects.equals(strLen, c.strLen) || strLen == null || c.strLen == null);
 	}
 
 	public boolean isSameNullAble(TableColumn c) {
-		return Objects.equals(nullAble, c.nullAble);
+		String type = this.typeGet(dataType);
+		return Objects.equals(nullAble, c.nullAble) || (type.contains("timestamp") && c.nullAble);
 	}
 
 	public boolean isSameDefault(TableColumn c) {
@@ -75,7 +78,7 @@ public class TableColumn {
 		if (columnDefault == null) {
 			return null;
 		}
-		List<String> chs = Arrays.asList("::character varying", "::bpchar", "::timestamp without time zone", "::integer");
+		List<String> chs = Arrays.asList("::character varying", "::bpchar", "::text", "::timestamp without time zone", "::integer");
 		for (String ch : chs) {
 			if (columnDefault.endsWith(ch)) {
 				columnDefault = columnDefault.substring(0, columnDefault.length() - ch.length());
@@ -99,9 +102,27 @@ public class TableColumn {
 		return tempSql.toString().trim();
 	}
 
+	private String typeGet(String dataType) {
+		String type = typeMap.getOrDefault(dataType, dataType);
+		if (columnType.endsWith("unsigned") && !isPri()) {
+			if (dataType.equals("smallint")) {
+				type = "int4";
+			} else if (dataType.equals("int")) {
+				type = "int8";
+			} else if (dataType.equals("bigint")) {
+				type = "numeric";
+				numericPrecision = 21;
+				numericScale = 0;
+			} else if ((dataType.equals("double") || dataType.equals("float")) && numericPrecision != null && numericScale != null) {
+				type = "numeric";
+			}
+		}
+		return type;
+	}
+
 	public String toColType() {
 		StringBuilder tempSql = new StringBuilder();
-		String type = typeMap.getOrDefault(dataType, dataType);
+		String type = this.typeGet(dataType);
 		if (autoIncrement) {
 			if ("bigint".equals(dataType)) {
 				type = "bigserial";
@@ -111,7 +132,7 @@ public class TableColumn {
 		}
 		if (strLen != null && type.contains("char")) {
 			tempSql.append(String.format("%s(%s) ", type, strLen));
-		} else if (dataType.equals("decimal") && numericPrecision != null && numericScale != null) {
+		} else if (type.equals("numeric") && numericPrecision != null && numericScale != null) {
 			tempSql.append(String.format("decimal(%s,%s) ", numericPrecision, numericScale));
 		} else {
 			tempSql.append(type + " ");
@@ -120,7 +141,8 @@ public class TableColumn {
 	}
 
 	public String toColNullAble() {
-		if (nullAble) {
+		String type = this.typeGet(dataType);
+		if (nullAble || type.contains("timestamp")) {
 			return "null ";
 		} else {
 			return "not null ";
@@ -133,9 +155,9 @@ public class TableColumn {
 	}
 
 	public String getDefaultStr() {
-		String type = typeMap.getOrDefault(dataType, dataType);
+		String type = this.typeGet(dataType);
 		if (columnDefault != null) {
-			if (type.contains("char")) {
+			if (type.contains("char") || type.contains("text")) {
 				return String.format("'%s'", StringEscapeUtils.escapeSql(columnDefault));
 			} else if (type.contains("timestamp") && columnDefault.matches("\\d{4}-[\\s\\S]*")) { // time like ‘2099-01-01 00:00:00’
 				if (!columnDefault.startsWith("0000")) {
@@ -230,5 +252,13 @@ public class TableColumn {
 
 	public void setNumericScale(Integer numericScale) {
 		this.numericScale = numericScale;
+	}
+
+	public String getColumnType() {
+		return columnType;
+	}
+
+	public void setColumnType(String columnType) {
+		this.columnType = columnType;
 	}
 }

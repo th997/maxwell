@@ -9,13 +9,19 @@ import com.zendesk.maxwell.util.StoppableTask;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCreator;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.support.JdbcUtils;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
 
+import java.sql.*;
 import java.util.*;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 
 public class PostgresqlProducer extends AbstractProducer implements StoppableTask {
 	static final Logger LOG = LoggerFactory.getLogger(PostgresqlProducer.class);
@@ -28,7 +34,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private ComboPooledDataSource postgresDs;
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
-	private DataSourceTransactionManager transactionManager;
+	private DataSourceTransactionManager pgTransactionManager;
+	private DataSourceTransactionManager mysqlTransactionManager;
 	private TableSyncLogic tableSyncLogic;
 
 	private LinkedList<UpdateSql> sqlList = new LinkedList<>();
@@ -40,17 +47,26 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private Set<String> asyncCommitTables;
 
 	private boolean initSchemas;
+	private boolean initData;
+	private Integer initDataThreadNum;
 
 	public PostgresqlProducer(MaxwellContext context) {
 		super(context);
 		pgProperties = context.getConfig().pgProperties;
+		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
+		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
+		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
+		initData = "true".equalsIgnoreCase(pgProperties.getProperty("initData"));
+		initDataThreadNum = Integer.parseInt(pgProperties.getProperty("initDataThreadNum", "10"));
+		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
+		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
 		postgresDs = new ComboPooledDataSource();
 		postgresDs.setJdbcUrl(pgProperties.getProperty("url"));
 		postgresDs.setUser(pgProperties.getProperty("user"));
 		postgresDs.setPassword(pgProperties.getProperty("password"));
 		postgresDs.setTestConnectionOnCheckout(true);
 		postgresDs.setMinPoolSize(1);
-		postgresDs.setMaxPoolSize(5);
+		postgresDs.setMaxPoolSize(initDataThreadNum);
 		postgresDs.setMaxIdleTime(180);
 		postgresDs.setPreferredTestQuery("select 1");
 		postgresDs.setAcquireRetryAttempts(Integer.MAX_VALUE);
@@ -58,23 +74,19 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		postgresJdbcTemplate = new JdbcTemplate(postgresDs, true);
 		C3P0ConnectionPool sourcePool = (C3P0ConnectionPool) context.getMaxwellConnectionPool();
 		mysqlJdbcTemplate = new JdbcTemplate(sourcePool.getCpds(), true);
-		transactionManager = new DataSourceTransactionManager(postgresDs);
+		pgTransactionManager = new DataSourceTransactionManager(postgresDs);
+		mysqlTransactionManager = new DataSourceTransactionManager(sourcePool.getCpds());
 		tableSyncLogic = new TableSyncLogic(mysqlJdbcTemplate, postgresJdbcTemplate);
-		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
-		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
-		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
-		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
-		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
+		if (initSchemas) {
+			this.initSchemas(syncDbs, initData);
+		}
 	}
 
 	@Override
 	public void push(RowMap r) throws Exception {
 		if (initSchemas) {
 			synchronized (this) {
-				for (String db : syncDbs) {
-					tableSyncLogic.syncAllTables(db);
-				}
-				LOG.info("initSchemas finish, exit...");
+				LOG.info("initSchemas completed, exit...");
 				System.exit(0);
 			}
 		}
@@ -146,7 +158,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		UpdateSql updateSql = sqlList.getLast();
 		RowMap rowMap = updateSql.getRowMap();
 		List<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
-		TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
+		TransactionStatus status = pgTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
 			if (groupList.size() == 1 && asyncCommitTables.contains(rowMap.getTable())) {
 				postgresJdbcTemplate.execute("set local synchronous_commit = off");
@@ -154,13 +166,13 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			for (UpdateSqlGroup group : groupList) {
 				this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 			}
-			transactionManager.commit(status);
+			pgTransactionManager.commit(status);
 			this.context.setPosition(rowMap);
 			LOG.info("batchUpdate size={},mergeSize={},time={},sql={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate, updateSql.getSql());
 			sqlList.clear();
 		} catch (Exception e) {
 			LOG.info("batchUpdate fail size={},mergeSize={},time={},sql={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate, updateSql.getSql());
-			transactionManager.rollback(status);
+			pgTransactionManager.rollback(status);
 			if (this.isMsgException(e, "does not exist")) {
 				for (UpdateSqlGroup group : groupList) {
 					try {
@@ -342,5 +354,161 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	@Override
 	public void awaitStop(Long timeout) throws TimeoutException {
 
+	}
+
+	private void initSchemas(Set<String> syncDbs, boolean initData) {
+		if (initData) {
+			this.initData(syncDbs);
+		} else {
+			for (String database : syncDbs) {
+				LOG.info("syncDatabase start:{}", database);
+				List<String> tables = tableSyncLogic.getMysqlTables(database);
+				for (String table : tables) {
+					tableSyncLogic.syncTable(database, table);
+				}
+				LOG.info("syncDatabase end:{}", database);
+			}
+		}
+	}
+
+	// Refer to  https://github.com/ClickHouse/ClickHouse/blob/master/src/Databases/MySQL/MaterializeMetadata.cpp
+	private void initData(Set<String> syncDbs) {
+		long start = System.currentTimeMillis();
+		// flush tables;
+		// flush tables with read lock;
+		// show master status;
+		mysqlJdbcTemplate.execute("flush tables;");
+		mysqlJdbcTemplate.execute("flush tables with read lock;");
+		Map<String, Object> position = mysqlJdbcTemplate.queryForMap("show master status;");
+		LOG.info("current position={}", position);
+		// set session transaction isolation level repeatable read;
+		DefaultTransactionDefinition definition = new DefaultTransactionDefinition();
+		definition.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+		TransactionStatus status = mysqlTransactionManager.getTransaction(definition);
+		// not start transaction with consistent snapshot
+		boolean transactionStart = false;
+		ThreadPoolExecutor executor = new ThreadPoolExecutor(initDataThreadNum, initDataThreadNum, 0L, TimeUnit.MILLISECONDS,
+				new LinkedBlockingQueue<>(initDataThreadNum), Executors.defaultThreadFactory(), new ThreadPoolExecutor.CallerRunsPolicy());
+		Integer insertCount = 0;
+		try {
+			for (String database : syncDbs) {
+				List<String> tables = tableSyncLogic.getMysqlTables(database);
+				for (String table : tables) {
+					if (!transactionStart) {
+						mysqlJdbcTemplate.execute(String.format("select 1 from `%s`.`%s` limit 1", database, table));
+						mysqlJdbcTemplate.execute("unlock tables;");
+						LOG.info("lockTableTime={}", System.currentTimeMillis() - start);
+						transactionStart = true;
+					}
+					tableSyncLogic.syncTable(database, table);
+					insertCount += this.initTableData(database, table, executor);
+				}
+			}
+			// commit;
+			mysqlTransactionManager.commit(status);
+			// completed and to set position
+			LOG.info("InitSchemas completed!!! The program will exit!!!  please set config initSchemas=false and db position={}", position);
+		} catch (Exception e) {
+			mysqlTransactionManager.rollback(status);
+			LOG.error("sync data error", e);
+		} finally {
+			executor.shutdown();
+			while (!executor.isTerminated()) {
+				try {
+					Thread.sleep(100);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+		LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
+	}
+
+	private Integer initTableData(String database, String table, ThreadPoolExecutor executor) {
+		String querySql = String.format("select * from `%s`.`%s`", database, table);
+		Integer count = mysqlJdbcTemplate.query(new PreparedStatementCreator() {
+			@Override
+			public PreparedStatement createPreparedStatement(Connection con) throws SQLException {
+				final PreparedStatement statement = con.prepareStatement(querySql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+				statement.setFetchSize(Integer.MIN_VALUE);
+				return statement;
+			}
+		}, new MyResultSetExtractor(database, table, executor));
+		return count;
+	}
+
+	public class MyResultSetExtractor implements ResultSetExtractor<Integer> {
+		final String database;
+		final String table;
+		final ThreadPoolExecutor executor;
+		// if has data
+		int rowCount = 0;
+		int columnCount = 0;
+		String[] columnNames = null;
+		String insertSql = null;
+		long start = System.currentTimeMillis();
+
+		public MyResultSetExtractor(String database, String table, ThreadPoolExecutor executor) {
+			this.database = database;
+			this.table = table;
+			this.executor = executor;
+		}
+
+		private void asyncBatchInsert(final String sql, final List<Object[]> argsList) {
+			executor.execute(() -> {
+				long start = System.currentTimeMillis();
+				TransactionStatus statusPg = pgTransactionManager.getTransaction(new DefaultTransactionDefinition());
+				try {
+					postgresJdbcTemplate.execute("set local synchronous_commit = off");
+					postgresJdbcTemplate.batchUpdate(sql, argsList);
+				} catch (Exception e) {
+					pgTransactionManager.rollback(statusPg);
+					LOG.error("batchUpdate error,sql={},args={}", sql, argsList.get(0), e);
+					throw e;
+				}
+				pgTransactionManager.commit(statusPg);
+				LOG.info("batch init insert,size={},time={},sql={}", argsList.size(), System.currentTimeMillis() - start, sql);
+			});
+		}
+
+		@Override
+		public Integer extractData(ResultSet rs) throws SQLException, DataAccessException {
+			List<Object[]> argsList = new ArrayList<>();
+			while (rs.next()) {
+				if (rowCount++ == 0) {
+					ResultSetMetaData rsmd = rs.getMetaData();
+					columnCount = rsmd.getColumnCount();
+					columnNames = new String[columnCount];
+					for (int i = 0; i < columnCount; i++) {
+						columnNames[i] = String.format("\"%s\"", JdbcUtils.lookupColumnName(rsmd, i + 1));
+					}
+					insertSql = String.format("insert into \"%s\".\"%s\"(%s) values(%s)", database, table, StringUtils.join(columnNames, ","), StringUtils.join(Collections.nCopies(columnNames.length, "?"), ","));
+					if (postgresJdbcTemplate.queryForList(String.format("select 1 from \"%s\".\"%s\" limit 1", database, table), Integer.class).size() > 0) {
+						throw new IllegalArgumentException(String.format("init data fail,postgresql table not empty:%s.%s", database, table));
+					}
+				}
+				Object[] args = new Object[columnCount];
+				for (int i = 0; i < columnCount; i++) {
+					Object value = JdbcUtils.getResultSetValue(rs, i + 1);
+					if (value instanceof Boolean) {
+						value = (Boolean) value ? 1 : 0;
+					} else if (value instanceof String) {
+						// fix ERROR: invalid byte sequence for encoding "UTF8": 0x00
+						value = ((String) value).replaceAll("\u0000", "");
+					}
+					args[i] = value;
+				}
+				argsList.add(args);
+				if (argsList.size() >= batchLimit) {
+					this.asyncBatchInsert(insertSql, argsList);
+					argsList = new ArrayList<>();
+				}
+			}
+			if (argsList.size() > 0) {
+				this.asyncBatchInsert(insertSql, argsList);
+			}
+			LOG.info("batch init query completed,table={}.{},rowCount={},time={}", database, table, rowCount, System.currentTimeMillis() - start);
+			return rowCount;
+		}
 	}
 }

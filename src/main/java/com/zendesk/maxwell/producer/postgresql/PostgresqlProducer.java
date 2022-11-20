@@ -72,7 +72,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		postgresDs.setAcquireRetryAttempts(Integer.MAX_VALUE);
 		postgresDs.setAcquireRetryDelay(3000);
 		postgresJdbcTemplate = new JdbcTemplate(postgresDs, true);
-		C3P0ConnectionPool sourcePool = (C3P0ConnectionPool) context.getMaxwellConnectionPool();
+		C3P0ConnectionPool sourcePool = (C3P0ConnectionPool) context.getReplicationConnectionPool();
 		mysqlJdbcTemplate = new JdbcTemplate(sourcePool.getCpds(), true);
 		pgTransactionManager = new DataSourceTransactionManager(postgresDs);
 		mysqlTransactionManager = new DataSourceTransactionManager(sourcePool.getCpds());

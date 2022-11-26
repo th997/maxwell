@@ -7,6 +7,9 @@ import java.util.*;
 public class TableColumn {
 	private final static Map<String, String> typeMap = new HashMap<>();
 
+	// https://dev.mysql.com/doc/refman/5.7/en/data-types.html
+	// https://dev.mysql.com/doc/connector-j/8.0/en/connector-j-reference-type-conversions.html
+	// see also ColumnDef.java
 	static {
 		typeMap.put("bigint", "int8");
 		typeMap.put("int", "int4");
@@ -18,14 +21,20 @@ public class TableColumn {
 		typeMap.put("decimal", "numeric");
 		typeMap.put("bit", "int8");
 
-		typeMap.put("char", "bpchar");
 		typeMap.put("enum", "varchar");
-		typeMap.put("set", "text");
+		typeMap.put("set", "varchar");
+		typeMap.put("char", "bpchar");
+		typeMap.put("varchar", "varchar");
+		typeMap.put("text", "text");
 		typeMap.put("tinytext", "text");
 		typeMap.put("mediumtext", "text");
 		typeMap.put("longtext", "text");
 
 		typeMap.put("datetime", "timestamp");
+		typeMap.put("timestamp", "timestamp");
+		typeMap.put("date", "date");
+		typeMap.put("time", "time");
+		typeMap.put("year", "int2");
 
 		// blob/binary will be base64 encoded and does not support synchronization for now.
 		// https://maxwells-daemon.io/dataformat/#blob-binary-encoded-strings
@@ -133,7 +142,7 @@ public class TableColumn {
 		if (strLen != null && type.contains("char")) {
 			tempSql.append(String.format("%s(%s) ", type, strLen));
 		} else if (type.equals("numeric") && numericPrecision != null && numericScale != null) {
-			tempSql.append(String.format("decimal(%s,%s) ", numericPrecision, numericScale));
+			tempSql.append(String.format("numeric(%s,%s) ", numericPrecision, numericScale));
 		} else {
 			tempSql.append(type + " ");
 		}

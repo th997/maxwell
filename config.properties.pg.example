@@ -1,0 +1,27 @@
+log_level=info
+
+producer=postgresql
+postgresql.url=jdbc:postgresql://localhost:5432/postgres?stringtype=unspecified&reWriteBatchedInserts=true
+postgresql.user=postgres
+postgresql.password=password
+postgresql.syncDbs=datatest,test
+#postgresql.initSchemas=true
+postgresql.initData=true
+
+output_primary_key_columns=true
+output_ddl=true
+gtid_mode=true
+output_null_zerodates=true
+replication_jdbc_options=yearIsDateType=false
+
+# replication db
+replication_host=localhost
+replication_user=root
+replication_password=password
+replication_port=3306
+
+# maxwell db ,read+write
+host=localhost
+user=root
+password=password
+port=3306

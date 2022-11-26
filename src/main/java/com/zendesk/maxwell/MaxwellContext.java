@@ -666,6 +666,10 @@ public class MaxwellContext {
 		this.replicator = replicator;
 	}
 
+	public Replicator getReplicator() {
+		return replicator;
+	}
+
 	/**
 	 * Get the current metrics registry
 	 * @return the current metrics registry

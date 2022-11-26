@@ -3,9 +3,14 @@ package com.zendesk.maxwell.producer.postgresql;
 import com.mchange.v2.c3p0.ComboPooledDataSource;
 import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.producer.AbstractProducer;
+import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.row.RowMap;
+import com.zendesk.maxwell.schema.Database;
+import com.zendesk.maxwell.schema.Table;
+import com.zendesk.maxwell.schema.columndef.ColumnDef;
 import com.zendesk.maxwell.util.C3P0ConnectionPool;
 import com.zendesk.maxwell.util.StoppableTask;
+import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +42,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private DataSourceTransactionManager pgTransactionManager;
 	private DataSourceTransactionManager mysqlTransactionManager;
 	private TableSyncLogic tableSyncLogic;
+	private Map<String, String> columnMap = new HashMap<>();
 
 	private LinkedList<UpdateSql> sqlList = new LinkedList<>();
 	private volatile Long lastUpdate = System.currentTimeMillis();
@@ -49,6 +55,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private boolean initSchemas;
 	private boolean initData;
 	private Integer initDataThreadNum;
+
+	private Position initPosition = null;
 
 	public PostgresqlProducer(MaxwellContext context) {
 		super(context);
@@ -86,7 +94,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	public void push(RowMap r) throws Exception {
 		if (initSchemas) {
 			synchronized (this) {
-				LOG.info("initSchemas completed, exit...");
+				if (initPosition != null) {
+					context.setPosition(initPosition);
+				}
+				LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", initPosition);
 				System.exit(0);
 			}
 		}
@@ -260,6 +271,43 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		return false;
 	}
 
+	private Object convertValue(RowMap r, Map.Entry<String, Object> e) {
+		Object value = e.getValue();
+		if (value instanceof Collection) {
+			value = StringUtils.join((Collection) value, ",");
+		}
+		if (value instanceof String) {
+			String key = String.format("%s.%s.%s", r.getDatabase(), r.getTable(), e.getKey());
+			String type = columnMap.get(key);
+			if (type == null) {
+				synchronized (columnMap) {
+					type = columnMap.get(key);
+					if (type == null) {
+						try {
+							LOG.info("init columnMap,{}", toJSON(r));
+							Database database = context.getReplicator().getSchema().findDatabase(r.getDatabase());
+							for (Table table : database.getTableList()) {
+								for (ColumnDef col : table.getColumnList()) {
+									columnMap.put(String.format("%s.%s.%s", database.getName(), table.getName(), col.getName()), col.getType());
+								}
+							}
+						} catch (Throwable t) {
+							LOG.error("columnMap get error", t);
+						}
+					}
+				}
+			}
+			if (type != null && (type.endsWith("blob") || type.endsWith("binary"))) {
+				try {
+					value = Base64.decodeBase64((String) value);
+				} catch (Throwable t) {
+					LOG.warn("decodeBase64 error", t);
+				}
+			}
+		}
+		return value;
+	}
+
 	private UpdateSql sqlInsert(RowMap r) {
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlV = new StringBuilder();
@@ -268,7 +316,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		for (Map.Entry<String, Object> e : r.getData().entrySet()) {
 			sqlK.append("\"" + e.getKey() + "\",");
 			sqlV.append("?,");
-			args[i++] = e.getValue();
+			args[i++] = this.convertValue(r, e);
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		sqlV.deleteCharAt(sqlV.length() - 1);
@@ -293,7 +341,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		int i = 0;
 		for (Map.Entry<String, Object> e : data.entrySet()) {
 			sqlK.append("\"" + e.getKey() + "\"=?,");
-			args[i++] = e.getValue();
+			args[i++] = this.convertValue(r, e);
 		}
 		if (sqlK.length() == 0) {
 			return null;
@@ -358,7 +406,23 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private void initSchemas(Set<String> syncDbs, boolean initData) {
 		if (initData) {
-			this.initData(syncDbs);
+			Connection replicationConnection = null;
+			try {
+				replicationConnection = mysqlJdbcTemplate.getDataSource().getConnection();
+				this.initData(syncDbs, replicationConnection);
+			} catch (SQLException e) {
+				LOG.error("sql error", e);
+				throw new RuntimeException(e);
+			} finally {
+				try {
+					if (replicationConnection != null && !replicationConnection.isClosed()) {
+						this.executeWithConn(replicationConnection, "unlock tables;");
+						JdbcUtils.closeConnection(replicationConnection);
+					}
+				} catch (SQLException e) {
+					LOG.error("close error", e);
+				}
+			}
 		} else {
 			for (String database : syncDbs) {
 				LOG.info("syncDatabase start:{}", database);
@@ -371,16 +435,22 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 	}
 
+	private void executeWithConn(Connection conn, String sql) throws SQLException {
+		try (Statement s = conn.createStatement()) {
+			s.execute(sql);
+		}
+	}
+
 	// Refer to  https://github.com/ClickHouse/ClickHouse/blob/master/src/Databases/MySQL/MaterializeMetadata.cpp
-	private void initData(Set<String> syncDbs) {
+	private void initData(Set<String> syncDbs, Connection replicationConnection) throws SQLException {
 		long start = System.currentTimeMillis();
 		// flush tables;
 		// flush tables with read lock;
 		// show master status;
-		mysqlJdbcTemplate.execute("flush tables;");
-		mysqlJdbcTemplate.execute("flush tables with read lock;");
-		Map<String, Object> position = mysqlJdbcTemplate.queryForMap("show master status;");
-		LOG.info("current position={}", position);
+		this.executeWithConn(replicationConnection, "flush tables;");
+		this.executeWithConn(replicationConnection, "flush tables with read lock;");
+		initPosition = Position.capture(replicationConnection, context.getConfig().gtidMode);
+		LOG.info("current position={}", initPosition);
 		// set session transaction isolation level repeatable read;
 		DefaultTransactionDefinition definition = new DefaultTransactionDefinition();
 		definition.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
@@ -396,7 +466,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				for (String table : tables) {
 					if (!transactionStart) {
 						mysqlJdbcTemplate.execute(String.format("select 1 from `%s`.`%s` limit 1", database, table));
-						mysqlJdbcTemplate.execute("unlock tables;");
+						this.executeWithConn(replicationConnection, "unlock tables;");
+						JdbcUtils.closeConnection(replicationConnection);
 						LOG.info("lockTableTime={}", System.currentTimeMillis() - start);
 						transactionStart = true;
 					}
@@ -406,8 +477,6 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			}
 			// commit;
 			mysqlTransactionManager.commit(status);
-			// completed and to set position
-			LOG.info("InitSchemas completed!!! The program will exit!!!  please set config initSchemas=false and db position={}", position);
 		} catch (Exception e) {
 			mysqlTransactionManager.rollback(status);
 			LOG.error("sync data error", e);

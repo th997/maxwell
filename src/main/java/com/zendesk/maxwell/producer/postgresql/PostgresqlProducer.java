@@ -44,7 +44,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private TableSyncLogic tableSyncLogic;
 	private Map<String, String> columnMap = new HashMap<>();
 
-	private LinkedList<UpdateSql> sqlList = new LinkedList<>();
+	private Deque<UpdateSql> sqlList = new ArrayDeque<>();
 	private volatile Long lastUpdate = System.currentTimeMillis();
 	private Integer batchLimit;
 	private Integer batchTransactionLimit;
@@ -108,8 +108,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private synchronized void doPush(RowMap r) throws Exception {
 		Long now = System.currentTimeMillis();
-		String output = r.toJSON(outputConfig);
-		if (output == null || !r.shouldOutput(outputConfig)) {
+		if (!r.shouldOutput(outputConfig)) {
 			if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
 				this.batchUpdate(sqlList);
 			}
@@ -163,14 +162,14 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		sqlList.add(sql);
 	}
 
-	private void batchUpdate(LinkedList<UpdateSql> sqlList) {
+	private void batchUpdate(Deque<UpdateSql> sqlList) {
 		lastUpdate = System.currentTimeMillis();
 		if (sqlList.isEmpty()) {
 			return;
 		}
 		UpdateSql updateSql = sqlList.getLast();
 		RowMap rowMap = updateSql.getRowMap();
-		List<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
+		Deque<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
 		TransactionStatus status = pgTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
 			if (groupList.size() == 1 && asyncCommitTables.contains(rowMap.getTable())) {
@@ -229,8 +228,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	 * @param sqlList
 	 * @return
 	 */
-	private LinkedList<UpdateSqlGroup> groupMergeSql(LinkedList<UpdateSql> sqlList) {
-		LinkedList<UpdateSqlGroup> ret = new LinkedList<>();
+	private Deque<UpdateSqlGroup> groupMergeSql(Deque<UpdateSql> sqlList) {
+		Deque<UpdateSqlGroup> ret = new ArrayDeque<>();
 		for (UpdateSql sql : sqlList) {
 			UpdateSqlGroup group;
 			// PreparedStatement can have at most 65,535 parameters
@@ -281,7 +280,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			value = StringUtils.join((Collection) value, ",");
 		}
 		if (value instanceof String) {
-			String key = String.format("%s.%s.%s", r.getDatabase(), r.getTable(), e.getKey());
+			String key = new StringBuilder().append(r.getDatabase()).append(".").append(r.getTable()).append(".").append(e.getKey()).toString();
 			String type = columnMap.get(key);
 			if (type == null) {
 				synchronized (columnMap) {

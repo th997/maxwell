@@ -54,6 +54,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private boolean initSchemas;
 	private boolean initData;
+	private boolean initDataLock;
 	private Integer initDataThreadNum;
 
 	private Position initPosition = null;
@@ -65,6 +66,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
 		initData = "true".equalsIgnoreCase(pgProperties.getProperty("initData"));
+		initDataLock = "true".equalsIgnoreCase(pgProperties.getProperty("initDataLock", "true"));
 		initDataThreadNum = Integer.parseInt(pgProperties.getProperty("initDataThreadNum", "10"));
 		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
 		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
@@ -231,7 +233,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		LinkedList<UpdateSqlGroup> ret = new LinkedList<>();
 		for (UpdateSql sql : sqlList) {
 			UpdateSqlGroup group;
-			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql())) {
+			// PreparedStatement can have at most 65,535 parameters
+			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql())
+					|| ("delete".equals(ret.getLast().getLastRowMap().getRowType()) && ret.getLast().getArgsList().size() * ret.getLast().getArgsList().get(0).length >= 65000)) {
 				group = new UpdateSqlGroup(sql.getSql());
 				ret.add(group);
 			} else {
@@ -416,7 +420,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			} finally {
 				try {
 					if (replicationConnection != null && !replicationConnection.isClosed()) {
-						this.executeWithConn(replicationConnection, "unlock tables;");
+						if (initDataLock) {
+							this.executeWithConn(replicationConnection, "unlock tables;");
+						}
 						JdbcUtils.closeConnection(replicationConnection);
 					}
 				} catch (SQLException e) {
@@ -447,8 +453,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		// flush tables;
 		// flush tables with read lock;
 		// show master status;
-		this.executeWithConn(replicationConnection, "flush tables;");
-		this.executeWithConn(replicationConnection, "flush tables with read lock;");
+		if (initDataLock) {
+			this.executeWithConn(replicationConnection, "flush tables;");
+			this.executeWithConn(replicationConnection, "flush tables with read lock;");
+		}
 		initPosition = Position.capture(replicationConnection, context.getConfig().gtidMode);
 		LOG.info("current position={}", initPosition);
 		// set session transaction isolation level repeatable read;
@@ -466,7 +474,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				for (String table : tables) {
 					if (!transactionStart) {
 						mysqlJdbcTemplate.execute(String.format("select 1 from `%s`.`%s` limit 1", database, table));
-						this.executeWithConn(replicationConnection, "unlock tables;");
+						if (initDataLock) {
+							this.executeWithConn(replicationConnection, "unlock tables;");
+						}
 						JdbcUtils.closeConnection(replicationConnection);
 						LOG.info("lockTableTime={}", System.currentTimeMillis() - start);
 						transactionStart = true;

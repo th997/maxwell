@@ -10,6 +10,7 @@ import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -21,9 +22,12 @@ import java.util.stream.Collectors;
 public class TableSyncLogic {
 	static final Logger LOG = LoggerFactory.getLogger(PostgresqlProducer.class);
 
+	private static final int PG_KEY_LEN = 64;
+
 	private static final String SQL_CREATE = "create table \"%s\".\"%s\" (%s)";
 
-	private static final String SQL_GET_POSTGRES_INDEX = "select indexname key_name,indexdef index_def from pg_catalog.pg_indexes where schemaname=? and tablename=?";
+	private static final String SQL_GET_POSTGRES_INDEX = "SELECT n.nspname AS schema_name, c.relname AS table_name, i.relname AS key_name, a.attname AS column_name, not x.indisunique AS non_unique, x.indisprimary AS pri, pg_get_indexdef(i.oid) AS index_def FROM pg_index x JOIN pg_class c ON c.oid = x.indrelid JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = any(x.indkey) LEFT JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind in('r','m','p') AND i.relkind IN('i','i') AND n.nspname=? AND c.relname=? ORDER BY i.relname, array_position(x.indkey, a.attnum)";
+	//private static final String SQL_GET_POSTGRES_INDEX = "select indexname key_name,indexdef index_def from pg_catalog.pg_indexes where schemaname=? and tablename=?";
 	private static final String SQL_GET_MYSQL_INDEX = "show index from `%s`.`%s`";
 
 	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,udt_name data_type,character_maximum_length str_len,column_default,is_nullable = 'YES' null_able from information_schema.columns t where t.table_schema =? and table_name =?";
@@ -60,7 +64,6 @@ public class TableSyncLogic {
 				LOG.info("database {} not exists,created it!", database);
 			}
 			StringBuilder fieldsB = new StringBuilder();
-			List<String> priKey = new ArrayList<>();
 			for (int i = 0, size = mysqlFields.size(); i < size; i++) {
 				TableColumn column = mysqlFields.get(i);
 				if (i == size - 1) {
@@ -71,12 +74,6 @@ public class TableSyncLogic {
 				if (StringUtils.isNotEmpty(column.getColumnComment())) {
 					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, column.getColumnName(), StringEscapeUtils.escapeSql(column.getColumnComment())));
 				}
-				if (column.isPri()) {
-					priKey.add(column.getColumnName());
-				}
-			}
-			if (!priKey.isEmpty()) {
-				fieldsB.append(String.format(" ,\r\nprimary key (\"%s\")", StringUtils.join(priKey, "\",\"")));
 			}
 			String sql = String.format(SQL_CREATE, database, table, fieldsB);
 			this.executeDDL(sql);
@@ -129,33 +126,34 @@ public class TableSyncLogic {
 	}
 
 	private void syncIndex(String database, String table) {
-		List<TableIndex> mysqlIndexes = this.getMysqlIndex(database, table);
-		List<TableIndex> postgresIndexes = this.getPostgresIndex(database, table);
-		if (mysqlIndexes.isEmpty()) {
-			return;
+		Map<String, List<TableIndex>> mysqlGroup = this.getMysqlIndex(database, table);
+		Map<String, List<TableIndex>> postgresGroup = this.getPostgresIndex(database, table);
+		MapDifference<String, List<TableIndex>> diff = Maps.difference(mysqlGroup, postgresGroup);
+		String pgIndexPrefix = table + "_";
+		for (List<TableIndex> index : diff.entriesOnlyOnRight().values()) {
+			String keyName = index.get(0).getKeyName();
+			if (keyName.startsWith(pgIndexPrefix) && !index.get(0).isPri()) {
+				this.executeDDL(String.format("drop index if exists \"%s\".\"%s\"", database, keyName));
+			}
 		}
-		Map<String, List<TableIndex>> mysqlGroup = mysqlIndexes.stream().collect(Collectors.groupingBy(TableIndex::getKeyName));
-		Map<String, List<TableIndex>> postgresGroup = postgresIndexes.stream().collect(Collectors.groupingBy(TableIndex::getKeyName));
-		for (Map.Entry<String, List<TableIndex>> e : mysqlGroup.entrySet()) {
-			String postgresIndexName = table + "_" + e.getKey(); // The index name should be unique in postgres
-			if (postgresIndexName.length() > 64) {
-				postgresIndexName = postgresIndexName.substring(0, 63);
+		for (List<TableIndex> index : diff.entriesOnlyOnLeft().values()) {
+			String keyName = index.get(0).getKeyName();
+			String postgresIndexName = pgIndexPrefix + keyName; // The index name should be unique in postgres
+			if (postgresIndexName.length() > PG_KEY_LEN) {
+				postgresIndexName = postgresIndexName.substring(0, PG_KEY_LEN);
 			}
-			if (postgresGroup.containsKey(postgresIndexName)) {
-				continue;
-			}
-			String cols = StringUtils.join(e.getValue().stream().map(TableIndex::getColumnName).collect(Collectors.toList()), "\",\"");
+			String cols = StringUtils.join(index.stream().map(TableIndex::getColumnName).collect(Collectors.toList()), "\",\"");
+			String uniq = index.get(0).isNonUnique() ? "" : "unique";
 			String sql;
-			if (!e.getValue().get(0).isNonUnique() && "PRIMARY".equals(e.getValue().get(0).getKeyName())) {
-				// primary key
+			if (!index.get(0).isNonUnique() && "PRIMARY".equals(index.get(0).getKeyName())) {
+				sql = String.format("alter table \"%s\".\"%s\" add primary key (\"%s\");", database, table, cols);
 			} else {
-				String uniq = e.getValue().get(0).isNonUnique() ? "" : "unique";
 				sql = String.format("create %s index concurrently \"%s\" on \"%s\".\"%s\" (\"%s\");", uniq, postgresIndexName, database, table, cols);
-				try {
-					this.executeDDL(sql);
-				} catch (Exception ex) {
-					LOG.warn("syncIndex fail:{}", sql);
-				}
+			}
+			try {
+				this.executeDDL(sql);
+			} catch (Exception ex) {
+				LOG.warn("syncIndex fail:{}", sql);
 			}
 		}
 	}
@@ -179,15 +177,26 @@ public class TableSyncLogic {
 		return list;
 	}
 
-	public List<TableIndex> getMysqlIndex(String tableSchema, String tableName) {
+	public Map<String, List<TableIndex>> getMysqlIndex(String tableSchema, String tableName) {
 		String sql = String.format(SQL_GET_MYSQL_INDEX, tableSchema, tableName);
 		List<TableIndex> list = mysqlJdbcTemplate.query(sql, BeanPropertyRowMapper.newInstance(TableIndex.class));
-		return list;
+		return groupByColumn(list);
 	}
 
-	public List<TableIndex> getPostgresIndex(String tableSchema, String tableName) {
+	public Map<String, List<TableIndex>> getPostgresIndex(String tableSchema, String tableName) {
 		List<TableIndex> list = postgresJdbcTemplate.query(SQL_GET_POSTGRES_INDEX, BeanPropertyRowMapper.newInstance(TableIndex.class), tableSchema, tableName);
-		return list;
+		return groupByColumn(list);
+	}
+
+	public Map<String, List<TableIndex>> groupByColumn(List<TableIndex> indexList) {
+		Map<String, List<TableIndex>> map = indexList.stream().collect(Collectors.groupingBy(TableIndex::getKeyName));
+		Map<String, List<TableIndex>> ret = new HashMap<>();
+		for (List<TableIndex> index : map.values()) {
+			String columns = StringUtils.join(index.stream().map(TableIndex::getColumnName).collect(Collectors.toList()), ",");
+			columns = columns + "," + index.get(0).isNonUnique();
+			ret.put(columns, index);
+		}
+		return ret;
 	}
 
 	public boolean existsPostgresDb(String database) {

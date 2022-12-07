@@ -5,7 +5,16 @@ public class TableIndex {
 	private String columnName;
 	private String indexType;
 	private boolean nonUnique;
+	private boolean pri;
 	private String indexDef;
+
+	public boolean isPri() {
+		return pri;
+	}
+
+	public void setPri(boolean pri) {
+		this.pri = pri;
+	}
 
 	public String getKeyName() {
 		return keyName;

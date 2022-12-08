@@ -76,11 +76,11 @@ public class TableColumn {
 	}
 
 	public boolean isSameDefault(TableColumn c) {
-		return Objects.equals(columnDefault, c.columnDefault)
+		return isSameType(c) && (Objects.equals(columnDefault, c.columnDefault)
 				|| (c.columnDefault != null && c.columnDefault.startsWith("nextval(")) // auto_increment
 				|| Objects.equals(columnDefault, getPostgresDefaultStr(c.columnDefault)) // value same
 				|| Objects.equals(getDefaultStr(), getPostgresDefaultStr(c.columnDefault)) // value same
-				;
+		);
 	}
 
 	private String getPostgresDefaultStr(String columnDefault) {
@@ -109,6 +109,10 @@ public class TableColumn {
 		tempSql.append(this.toColNullAble());
 		tempSql.append(this.toColDefault());
 		return tempSql.toString().trim();
+	}
+
+	public String typeGet() {
+		return typeGet(dataType);
 	}
 
 	private String typeGet(String dataType) {

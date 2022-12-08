@@ -92,29 +92,29 @@ public class TableSyncLogic {
 					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
 				}
 			}
+			if (sql.length() > 0) {
+				sql.deleteCharAt(sql.length() - 1);
+				sql.insert(0, String.format("alter table \"%s\".\"%s\" ", database, table));
+				this.executeDDL(sql.toString());
+			}
 			for (String key : diff.entriesDiffering().keySet()) {
 				TableColumn mysql = mysqlMap.get(key);
 				TableColumn postgres = postgresMap.get(key);
 				if (!mysql.equalsPostgresCol(postgres)) {
-					if (!mysql.isSameType(postgres)) {
-						sql.append(String.format("alter column \"%s\" type %s,", mysql.getColumnName(), mysql.toColType()));
-					}
-					if (!mysql.isSameNullAble(postgres) && mysql.isNullAble()) {
-						sql.append(String.format("alter column \"%s\" %s not null,", mysql.getColumnName(), mysql.isNullAble() ? "drop" : "set"));
-					}
 					if (!mysql.isSameDefault(postgres)) {
 						String defStr = mysql.toColDefault();
-						sql.append(String.format("alter column \"%s\" %s,", mysql.getColumnName(), defStr.isEmpty() ? "drop default" : "set " + defStr));
+						this.executeDDL(String.format("alter table \"%s\".\"%s\" alter column \"%s\" %s", database, table, mysql.getColumnName(), defStr.isEmpty() ? "drop default" : "set " + defStr));
+					}
+					if (!mysql.isSameNullAble(postgres) && mysql.isNullAble()) {
+						this.executeDDL(String.format("alter table \"%s\".\"%s\" alter column \"%s\" %s not null", database, table, mysql.getColumnName(), mysql.isNullAble() ? "drop" : "set"));
+					}
+					if (!mysql.isSameType(postgres)) {
+						this.executeDDL(String.format("alter table \"%s\".\"%s\" alter column \"%s\" type %s using \"%s\"::%s", database, table, mysql.getColumnName(), mysql.toColType(), mysql.getColumnName(), mysql.typeGet()));
 					}
 					if (StringUtils.isNotEmpty(mysql.getColumnComment())) {
 						commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));
 					}
 				}
-			}
-			if (sql.length() > 0) {
-				sql.deleteCharAt(sql.length() - 1);
-				sql.insert(0, String.format("alter table \"%s\".\"%s\" ", database, table));
-				this.executeDDL(sql.toString());
 			}
 		}
 		if (!commentSqlList.isEmpty()) {

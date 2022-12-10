@@ -7,6 +7,8 @@ postgresql.password=password
 postgresql.syncDbs=datatest,test
 #postgresql.initSchemas=true
 postgresql.initData=true
+postgresql.initDataDelete=false
+postgresql.batchLimit=1000
 
 output_primary_key_columns=true
 output_ddl=true
@@ -25,3 +27,6 @@ host=localhost
 user=root
 password=password
 port=3306
+
+metrics_type=slf4j
+metrics_slf4j_interval=60

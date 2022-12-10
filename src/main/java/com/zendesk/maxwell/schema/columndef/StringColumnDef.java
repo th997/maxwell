@@ -90,12 +90,14 @@ public class StringColumnDef extends ColumnDef {
 	}
 	@Override
 	public Object asJSON(Object value, MaxwellOutputConfig config) throws ColumnDefCastException {
-
 		if ( value instanceof String ) {
 			return value;
-		} else if ( value instanceof byte[] ) {
+		} else if (value instanceof byte[]) {
 			byte[] b = (byte[]) value;
 			if (charset.equals("binary")) {
+				if (!config.byte2base64) {
+					return value;
+				}
 				return Base64.encodeBase64String(b);
 			} else {
 				return new String(b, charsetForCharset());

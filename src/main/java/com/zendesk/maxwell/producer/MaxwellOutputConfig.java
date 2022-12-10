@@ -19,6 +19,7 @@ public class MaxwellOutputConfig {
 	public boolean includesPrimaryKeyColumns;
 	public boolean includesPushTimestamp;
 	public boolean outputDDL;
+	public boolean byte2base64;
 	public List<Pattern> excludeColumns;
 	public EncryptionMode encryptionMode;
 	public String secretKey;
@@ -37,6 +38,7 @@ public class MaxwellOutputConfig {
 		this.includesPrimaryKeys = false;
 		this.includesPrimaryKeyColumns = false;
 		this.includesPushTimestamp = false;
+		this.byte2base64 = true;
 		this.outputDDL = false;
 		this.zeroDatesAsNull = false;
 		this.excludeColumns = new ArrayList<>();

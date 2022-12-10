@@ -5,12 +5,8 @@ import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.producer.AbstractProducer;
 import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.row.RowMap;
-import com.zendesk.maxwell.schema.Database;
-import com.zendesk.maxwell.schema.Table;
-import com.zendesk.maxwell.schema.columndef.ColumnDef;
 import com.zendesk.maxwell.util.C3P0ConnectionPool;
 import com.zendesk.maxwell.util.StoppableTask;
-import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,10 +27,6 @@ import java.util.concurrent.*;
 public class PostgresqlProducer extends AbstractProducer implements StoppableTask {
 	static final Logger LOG = LoggerFactory.getLogger(PostgresqlProducer.class);
 
-	private static final String SQL_INSERT = "insert into \"%s\".\"%s\"(%s) values(%s)";
-	private static final String SQL_UPDATE = "update \"%s\".\"%s\" set %s where %s";
-	private static final String SQL_DELETE = "delete from \"%s\".\"%s\" where %s";
-
 	private Properties pgProperties;
 	private ComboPooledDataSource postgresDs;
 	private JdbcTemplate postgresJdbcTemplate;
@@ -42,7 +34,6 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private DataSourceTransactionManager pgTransactionManager;
 	private DataSourceTransactionManager mysqlTransactionManager;
 	private TableSyncLogic tableSyncLogic;
-	private Map<String, String> columnMap = new HashMap<>();
 
 	private Deque<UpdateSql> sqlList = new ArrayDeque<>();
 	private volatile Long lastUpdate = System.currentTimeMillis();
@@ -56,11 +47,13 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private boolean initData;
 	private boolean initDataLock;
 	private Integer initDataThreadNum;
+	private boolean initDataDelete;
 
 	private Position initPosition = null;
 
 	public PostgresqlProducer(MaxwellContext context) {
 		super(context);
+		context.getConfig().outputConfig.byte2base64 = false;
 		pgProperties = context.getConfig().pgProperties;
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
 		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
@@ -68,6 +61,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		initData = "true".equalsIgnoreCase(pgProperties.getProperty("initData"));
 		initDataLock = "true".equalsIgnoreCase(pgProperties.getProperty("initDataLock", "true"));
 		initDataThreadNum = Integer.parseInt(pgProperties.getProperty("initDataThreadNum", "10"));
+		initDataDelete = "true".equalsIgnoreCase(pgProperties.getProperty("initDataDelete"));
 		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
 		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
 		postgresDs = new ComboPooledDataSource();
@@ -106,7 +100,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		this.doPush(r);
 	}
 
-	private synchronized void doPush(RowMap r) throws Exception {
+	private synchronized void doPush(RowMap r) {
 		Long now = System.currentTimeMillis();
 		if (!r.shouldOutput(outputConfig)) {
 			if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
@@ -248,8 +242,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			if ("delete".equals(r.getRowType()) && r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
 				Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
-				String in = String.format("\"%s\" in (%s)", r.getPrimaryKeyColumns().get(0), String.join(",", Collections.nCopies(ids.length, "?")));
-				String sql = String.format(SQL_DELETE, r.getDatabase(), r.getTable(), in);
+				String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ")
+						.append(delimitPg(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
 				List<Object[]> argsList = new ArrayList<>();
 				argsList.add(ids);
 				group.setSql(sql);
@@ -279,56 +273,28 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		if (value instanceof Collection) {
 			value = StringUtils.join((Collection) value, ",");
 		}
-		if (value instanceof String) {
-			String key = new StringBuilder().append(r.getDatabase()).append(".").append(r.getTable()).append(".").append(e.getKey()).toString();
-			String type = columnMap.get(key);
-			if (type == null) {
-				synchronized (columnMap) {
-					type = columnMap.get(key);
-					if (type == null) {
-						try {
-							LOG.info("init columnMap,{}", toJSON(r));
-							Database database = context.getReplicator().getSchema().findDatabase(r.getDatabase());
-							for (Table table : database.getTableList()) {
-								for (ColumnDef col : table.getColumnList()) {
-									columnMap.put(String.format("%s.%s.%s", database.getName(), table.getName(), col.getName()), col.getType());
-								}
-							}
-						} catch (Throwable t) {
-							LOG.error("columnMap get error", t);
-						}
-					}
-				}
-			}
-			if (type != null && (type.endsWith("blob") || type.endsWith("binary"))) {
-				try {
-					value = Base64.decodeBase64((String) value);
-				} catch (Throwable t) {
-					LOG.warn("decodeBase64 error", t);
-				}
-			}
-		}
 		return value;
 	}
 
 	private UpdateSql sqlInsert(RowMap r) {
+		StringBuilder sql = new StringBuilder();
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlV = new StringBuilder();
 		Object[] args = new Object[r.getData().size()];
 		int i = 0;
 		for (Map.Entry<String, Object> e : r.getData().entrySet()) {
-			sqlK.append("\"" + e.getKey() + "\",");
+			sqlK.append(delimitPg(e.getKey())).append(",");
 			sqlV.append("?,");
 			args[i++] = this.convertValue(r, e);
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		sqlV.deleteCharAt(sqlV.length() - 1);
-		String sql = String.format(SQL_INSERT, r.getDatabase(), r.getTable(), sqlK, sqlV);
+		// insert into %s.%s(%s) values(%s) on conflict(%s) do nothing
+		sql.append("insert into ").append(delimitPg(r.getDatabase(), r.getTable())).append("(").append(sqlK).append(") values(").append(sqlV).append(")");
 		if (!r.getPrimaryKeyColumns().isEmpty()) {
-			String extra = String.format(" on conflict(\"%s\") do nothing", StringUtils.join(r.getPrimaryKeyColumns(), "\",\""));
-			sql = sql + extra;
+			sql.append(" on conflict(").append(delimitPg(StringUtils.join(r.getPrimaryKeyColumns(), delimitPg(",")))).append(") do nothing");
 		}
-		return new UpdateSql(sql, args, r);
+		return new UpdateSql(sql.toString(), args, r);
 	}
 
 	private UpdateSql sqlUpdate(RowMap r) {
@@ -343,7 +309,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Object[] args = new Object[data.size() + keys.size()];
 		int i = 0;
 		for (Map.Entry<String, Object> e : data.entrySet()) {
-			sqlK.append("\"" + e.getKey() + "\"=?,");
+			sqlK.append(delimitPg(e.getKey())).append("=?,");
 			args[i++] = this.convertValue(r, e);
 		}
 		if (sqlK.length() == 0) {
@@ -351,7 +317,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		for (String pri : keys) {
-			sqlPri.append("\"" + pri + "\"=? and ");
+			sqlPri.append(delimitPg(pri)).append("=? and ");
 			Object priValue = oldData.get(pri);
 			if (priValue == null) {
 				priValue = data.get(pri);
@@ -359,7 +325,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			args[i++] = priValue;
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
-		String sql = String.format(SQL_UPDATE, r.getDatabase(), r.getTable(), sqlK, sqlPri);
+		// update "%s"."%s" set %s where %s
+		String sql = new StringBuilder().append("update ").append(delimitPg(r.getDatabase(), r.getTable())).append(" set ").append(sqlK).append(" where ").append(sqlPri).toString();
 		return new UpdateSql(sql, args, r);
 	}
 
@@ -372,12 +339,24 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Object[] args = new Object[r.getPrimaryKeyColumns().size()];
 		int i = 0;
 		for (String pri : r.getPrimaryKeyColumns()) {
-			sqlPri.append("\"" + pri + "\"=? and ");
+			sqlPri.append(delimitPg(pri)).append("=? and ");
 			args[i++] = data.get(pri);
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
-		String sql = String.format(SQL_DELETE, r.getDatabase(), r.getTable(), sqlPri);
+		// delete from "%s"."%s" where %s
+		String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ").append(sqlPri).toString();
 		return new UpdateSql(sql, args, r);
+	}
+
+	public String delimitPg(String... keys) {
+		StringBuilder s = new StringBuilder();
+		for (String key : keys) {
+			s.append('"').append(key).append('"').append('.');
+		}
+		if (s.length() > 0) {
+			s.deleteCharAt(s.length() - 1);
+		}
+		return s.toString();
 	}
 
 	public String toJSON(RowMap r) {
@@ -444,6 +423,11 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		try (Statement s = conn.createStatement()) {
 			s.execute(sql);
 		}
+	}
+
+	private void pgExecute(String sql) throws SQLException {
+		LOG.info("pgExecute:{}", sql);
+		postgresJdbcTemplate.execute(sql);
 	}
 
 	// Refer to  https://github.com/ClickHouse/ClickHouse/blob/master/src/Databases/MySQL/MaterializeMetadata.cpp
@@ -558,11 +542,20 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 					columnCount = rsmd.getColumnCount();
 					columnNames = new String[columnCount];
 					for (int i = 0; i < columnCount; i++) {
-						columnNames[i] = String.format("\"%s\"", JdbcUtils.lookupColumnName(rsmd, i + 1));
+						columnNames[i] = delimitPg(JdbcUtils.lookupColumnName(rsmd, i + 1));
 					}
-					insertSql = String.format("insert into \"%s\".\"%s\"(%s) values(%s)", database, table, StringUtils.join(columnNames, ","), StringUtils.join(Collections.nCopies(columnNames.length, "?"), ","));
-					if (postgresJdbcTemplate.queryForList(String.format("select 1 from \"%s\".\"%s\" limit 1", database, table), Integer.class).size() > 0) {
-						throw new IllegalArgumentException(String.format("init data fail,postgresql table not empty:%s.%s", database, table));
+					insertSql = String.format("insert into %s(%s) values(%s)", delimitPg(database, table), StringUtils.join(columnNames, ","), StringUtils.join(Collections.nCopies(columnNames.length, "?"), ","));
+					if (postgresJdbcTemplate.queryForList(String.format("select 1 from %s limit 1", delimitPg(database, table)), Integer.class).size() > 0) {
+						if (initDataDelete) {
+							try {
+								pgExecute("truncate " + delimitPg(database, table));
+							} catch (Exception e) {
+								LOG.info("truncate fail,change to delete... {}", e.getMessage());
+								pgExecute("delete from " + delimitPg(database, table));
+							}
+						} else {
+							throw new IllegalArgumentException(String.format("init data fail,postgresql table not empty:%s.%s", database, table));
+						}
 					}
 				}
 				Object[] args = new Object[columnCount];

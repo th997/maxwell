@@ -81,6 +81,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		pgTransactionManager = new DataSourceTransactionManager(postgresDs);
 		mysqlTransactionManager = new DataSourceTransactionManager(sourcePool.getCpds());
 		tableSyncLogic = new TableSyncLogic(mysqlJdbcTemplate, postgresJdbcTemplate);
+		if (syncDbs.size() == 1 && syncDbs.contains("all")) {
+			syncDbs.clear();
+			syncDbs.addAll(tableSyncLogic.getDbs());
+		}
 		if (initSchemas) {
 			this.initSchemas(syncDbs, initData);
 		}
@@ -129,7 +133,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				this.batchUpdate(sqlList);
 				if (r.getTable() != null) {
 					LOG.info("ddl={}", this.toJSON(r));
+					tableSyncLogic.ddlRename(r);
 					tableSyncLogic.syncTable(r.getDatabase(), r.getTable());
+					this.context.setPosition(r);
 				} else {
 					LOG.warn("unrecognizable ddl:{}", toJSON(r));
 				}
@@ -185,7 +191,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 						this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 					} catch (Exception e1) {
 						if (this.isMsgException(e1, "does not exist")) {
-							if (tableSyncLogic.syncTable(rowMap.getDatabase(), rowMap.getTable())) {
+							if (tableSyncLogic.syncTable(group.getLastRowMap().getDatabase(), group.getLastRowMap().getTable())) {
 								this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 							}
 						} else {

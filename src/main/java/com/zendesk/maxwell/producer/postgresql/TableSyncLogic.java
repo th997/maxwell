@@ -2,6 +2,9 @@ package com.zendesk.maxwell.producer.postgresql;
 
 import com.google.common.collect.MapDifference;
 import com.google.common.collect.Maps;
+import com.zendesk.maxwell.row.RowMap;
+import com.zendesk.maxwell.schema.ddl.DDLMap;
+import com.zendesk.maxwell.schema.ddl.ResolvedTableAlter;
 import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -9,10 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -40,6 +40,8 @@ public class TableSyncLogic {
 	private static final String SQL_CREATE_POSTGRES_DB = "create schema \"%s\"";
 
 	private static final String SQL_DROP_POSTGRES_TABLE = "drop table if exists \"%s\".\"%s\"";
+
+	private static final String SQL_MYSQL_DBS = "select schema_name from information_schema.schemata where schema_name not in ('information_schema','pg_catalog','public')";
 
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
@@ -204,4 +206,70 @@ public class TableSyncLogic {
 		return count > 0;
 	}
 
+	public Collection<String> getDbs() {
+		return mysqlJdbcTemplate.queryForList(SQL_MYSQL_DBS, String.class);
+	}
+
+	public void ddlRename(RowMap r) {
+		if (!(r instanceof DDLMap)) {
+			return;
+		}
+		String sql = ((DDLMap) r).getSql();
+		if (sql == null) {
+			return;
+		}
+		// /* xxx */ alter table xxx
+		if (sql.startsWith("/*")) {
+			int loc = sql.indexOf("*/");
+			if (loc > 0) {
+				sql = sql.substring(loc + 2).trim();
+			}
+		}
+		sql = sql.replaceAll("`", "");
+		String[] arr = sql.split("\\s+");
+		// rename table xx to xx;
+		if (arr.length >= 5 && arr[0].equalsIgnoreCase("rename")
+				&& arr[1].equalsIgnoreCase("table")
+				&& arr[3].equalsIgnoreCase("to")
+				&& !arr[2].equalsIgnoreCase(arr[4])) {
+			String alterSql = "alter table \"%s\".\"%s\" rename to \"%s\"";
+			try {
+				if (((DDLMap) r).getChange() instanceof ResolvedTableAlter) {
+					ResolvedTableAlter change = (ResolvedTableAlter) ((DDLMap) r).getChange();
+					this.executeDDL(String.format(alterSql, change.oldTable.getDatabase(), change.oldTable.getName(), change.newTable.getName()));
+				}
+			} catch (Throwable e) {
+				LOG.warn("ddlRename error,sql={}", sql, e);
+			}
+			return;
+		}
+		String oldName = null;
+		String newName = null;
+		// alter table xxx rename column column_old to column_new
+		if (arr.length >= 8 && arr[0].equalsIgnoreCase("alter")
+				&& arr[1].equalsIgnoreCase("table")
+				&& arr[3].equalsIgnoreCase("rename")
+				&& arr[4].equalsIgnoreCase("column")
+				&& arr[6].equalsIgnoreCase("to")
+				&& !arr[5].equalsIgnoreCase(arr[7])) {
+			oldName = arr[5];
+			newName = arr[7];
+		}
+		// alter table xxx change column_old column_new xxx
+		if (arr.length > 6 && arr[0].equalsIgnoreCase("alter")
+				&& arr[1].equalsIgnoreCase("table")
+				&& arr[3].equalsIgnoreCase("change")
+				&& !arr[4].equalsIgnoreCase(arr[5])) {
+			oldName = arr[4];
+			newName = arr[5];
+		}
+		if (oldName != null) {
+			String alterSql = "alter table \"%s\".\"%s\" rename column \"%s\" to \"%s\"";
+			try {
+				this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), oldName, newName));
+			} catch (Throwable e) {
+				LOG.warn("ddlRename error,sql={}", sql, e);
+			}
+		}
+	}
 }

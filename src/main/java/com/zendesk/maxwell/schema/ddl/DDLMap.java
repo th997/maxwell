@@ -78,4 +78,8 @@ public class DDLMap extends RowMap {
 	public String getSql() {
 		return sql;
 	}
+
+	public ResolvedSchemaChange getChange() {
+		return change;
+	}
 }

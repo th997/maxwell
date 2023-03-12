@@ -52,6 +52,10 @@ public class TableSyncLogic {
 	}
 
 	public synchronized boolean syncTable(String database, String table) {
+		return syncTable(database, table, true);
+	}
+
+	public synchronized boolean syncTable(String database, String table, boolean syncIndex) {
 		LOG.info("syncTable start:{}.{}", database, table);
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
 		if (mysqlFields.isEmpty()) {
@@ -122,12 +126,14 @@ public class TableSyncLogic {
 		if (!commentSqlList.isEmpty()) {
 			postgresJdbcTemplate.batchUpdate(commentSqlList.toArray(new String[commentSqlList.size()]));
 		}
-		this.syncIndex(database, table);
+		if (syncIndex) {
+			this.syncIndex(database, table);
+		}
 		LOG.info("syncTable end:{}.{}", database, table);
 		return true;
 	}
 
-	private void syncIndex(String database, String table) {
+	public void syncIndex(String database, String table) {
 		Map<String, List<TableIndex>> mysqlGroup = this.getMysqlIndex(database, table);
 		Map<String, List<TableIndex>> postgresGroup = this.getPostgresIndex(database, table);
 		MapDifference<String, List<TableIndex>> diff = Maps.difference(mysqlGroup, postgresGroup);
@@ -228,10 +234,16 @@ public class TableSyncLogic {
 		sql = sql.replaceAll("`", "");
 		String[] arr = sql.split("\\s+");
 		// rename table xx to xx;
-		if (arr.length >= 5 && arr[0].equalsIgnoreCase("rename")
-				&& arr[1].equalsIgnoreCase("table")
-				&& arr[3].equalsIgnoreCase("to")
-				&& !arr[2].equalsIgnoreCase(arr[4])) {
+		// alter table xx rename to xx;
+		if ((arr.length >= 5 && arr[0].equalsIgnoreCase("rename") // 1
+				&& arr[1].equalsIgnoreCase("table") // 1
+				&& arr[3].equalsIgnoreCase("to") // 1
+				&& !arr[2].equalsIgnoreCase(arr[4])) // 1
+				|| (arr.length >= 6 && arr[0].equalsIgnoreCase("alter") // 2
+				&& arr[1].equalsIgnoreCase("table") // 2
+				&& arr[3].equalsIgnoreCase("rename")// 2
+				&& arr[4].equalsIgnoreCase("to")// 2
+				&& !arr[2].equalsIgnoreCase(arr[5]))) {
 			String alterSql = "alter table \"%s\".\"%s\" rename to \"%s\"";
 			try {
 				if (((DDLMap) r).getChange() instanceof ResolvedTableAlter) {
@@ -246,19 +258,19 @@ public class TableSyncLogic {
 		String oldName = null;
 		String newName = null;
 		// alter table xxx rename column column_old to column_new
-		if (arr.length >= 8 && arr[0].equalsIgnoreCase("alter")
-				&& arr[1].equalsIgnoreCase("table")
-				&& arr[3].equalsIgnoreCase("rename")
-				&& arr[4].equalsIgnoreCase("column")
-				&& arr[6].equalsIgnoreCase("to")
+		if (arr.length >= 8 && arr[0].equalsIgnoreCase("alter") //
+				&& arr[1].equalsIgnoreCase("table") //
+				&& arr[3].equalsIgnoreCase("rename") //
+				&& arr[4].equalsIgnoreCase("column") //
+				&& arr[6].equalsIgnoreCase("to") //
 				&& !arr[5].equalsIgnoreCase(arr[7])) {
 			oldName = arr[5];
 			newName = arr[7];
 		}
 		// alter table xxx change column_old column_new xxx
-		if (arr.length > 6 && arr[0].equalsIgnoreCase("alter")
-				&& arr[1].equalsIgnoreCase("table")
-				&& arr[3].equalsIgnoreCase("change")
+		if (arr.length > 6 && arr[0].equalsIgnoreCase("alter") //
+				&& arr[1].equalsIgnoreCase("table") //
+				&& arr[3].equalsIgnoreCase("change") //
 				&& !arr[4].equalsIgnoreCase(arr[5])) {
 			oldName = arr[4];
 			newName = arr[5];

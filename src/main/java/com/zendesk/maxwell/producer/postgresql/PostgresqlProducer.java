@@ -12,7 +12,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.PreparedStatementCreator;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.support.JdbcUtils;
@@ -37,18 +36,19 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private Deque<UpdateSql> sqlList = new ArrayDeque<>();
 	private volatile Long lastUpdate = System.currentTimeMillis();
-	private Integer batchLimit;
-	private Integer batchTransactionLimit;
-
 	private Set<String> syncDbs;
 	private Set<String> asyncCommitTables;
 
+	private Integer batchLimit;
+	private Integer batchTransactionLimit;
+	private Integer maxPoolSize;
+	private Integer syncIndexMinute;
 	private boolean initSchemas;
+	// init data
 	private boolean initData;
 	private boolean initDataLock;
 	private Integer initDataThreadNum;
 	private boolean initDataDelete;
-
 	private Position initPosition = null;
 
 	public PostgresqlProducer(MaxwellContext context) {
@@ -58,19 +58,25 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
 		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
+		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
+		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
+		maxPoolSize = Integer.parseInt(pgProperties.getProperty("maxPoolSize", "10"));
+		syncIndexMinute = Integer.parseInt(pgProperties.getProperty("syncIndexMinute", "600"));
+		// init data
 		initData = "true".equalsIgnoreCase(pgProperties.getProperty("initData"));
 		initDataLock = "true".equalsIgnoreCase(pgProperties.getProperty("initDataLock", "true"));
 		initDataThreadNum = Integer.parseInt(pgProperties.getProperty("initDataThreadNum", "10"));
 		initDataDelete = "true".equalsIgnoreCase(pgProperties.getProperty("initDataDelete"));
-		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
-		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
+		if (initData) {
+			maxPoolSize = Math.max(initDataThreadNum, maxPoolSize);
+		}
 		postgresDs = new ComboPooledDataSource();
 		postgresDs.setJdbcUrl(pgProperties.getProperty("url"));
 		postgresDs.setUser(pgProperties.getProperty("user"));
 		postgresDs.setPassword(pgProperties.getProperty("password"));
 		postgresDs.setTestConnectionOnCheckout(true);
 		postgresDs.setMinPoolSize(1);
-		postgresDs.setMaxPoolSize(initDataThreadNum);
+		postgresDs.setMaxPoolSize(maxPoolSize);
 		postgresDs.setMaxIdleTime(180);
 		postgresDs.setPreferredTestQuery("select 1");
 		postgresDs.setAcquireRetryAttempts(Integer.MAX_VALUE);
@@ -87,6 +93,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 		if (initSchemas) {
 			this.initSchemas(syncDbs, initData);
+		} else if (syncIndexMinute > 0) {
+			this.startSyncIndexTask(syncIndexMinute);
 		}
 	}
 
@@ -97,7 +105,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				if (initPosition != null) {
 					context.setPosition(initPosition);
 				}
-				LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", initPosition);
+				LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", context.getPosition());
 				System.exit(0);
 			}
 		}
@@ -106,10 +114,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private synchronized void doPush(RowMap r) {
 		Long now = System.currentTimeMillis();
+		if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
+			this.batchUpdate(sqlList);
+		}
 		if (!r.shouldOutput(outputConfig)) {
-			if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
-				this.batchUpdate(sqlList);
-			}
 			return;
 		}
 		if (!syncDbs.contains(r.getDatabase())) {
@@ -233,7 +241,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		for (UpdateSql sql : sqlList) {
 			UpdateSqlGroup group;
 			// PreparedStatement can have at most 65,535 parameters
-			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql())
+			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql()) //
 					|| ("delete".equals(ret.getLast().getLastRowMap().getRowType()) && ret.getLast().getArgsList().size() * ret.getLast().getArgsList().get(0).length >= 65000)) {
 				group = new UpdateSqlGroup(sql.getSql());
 				ret.add(group);
@@ -248,7 +256,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			if ("delete".equals(r.getRowType()) && r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
 				Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
-				String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ")
+				String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ")  //
 						.append(delimitPg(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
 				List<Object[]> argsList = new ArrayList<>();
 				argsList.add(ids);
@@ -392,6 +400,26 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	}
 
+	private void startSyncIndexTask(long syncIndexMinute) {
+		if (syncIndexMinute <= 0) {
+			return;
+		}
+		Timer timer = new Timer();
+		timer.schedule(new TimerTask() {
+			@Override
+			public void run() {
+				for (String database : syncDbs) {
+					LOG.info("SyncIndexTask start:{}", database);
+					List<String> tables = tableSyncLogic.getMysqlTables(database);
+					for (String table : tables) {
+						tableSyncLogic.syncIndex(database, table);
+					}
+					LOG.info("SyncIndexTask end:{}", database);
+				}
+			}
+		}, 60_000L, syncIndexMinute * 60_000L);
+	}
+
 	private void initSchemas(Set<String> syncDbs, boolean initData) {
 		if (initData) {
 			Connection replicationConnection = null;
@@ -431,7 +459,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 	}
 
-	private void pgExecute(String sql) throws SQLException {
+	private void pgExecute(String sql) {
 		LOG.info("pgExecute:{}", sql);
 		postgresJdbcTemplate.execute(sql);
 	}
@@ -470,8 +498,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 						LOG.info("lockTableTime={}", System.currentTimeMillis() - start);
 						transactionStart = true;
 					}
-					tableSyncLogic.syncTable(database, table);
+					tableSyncLogic.syncTable(database, table, false);
 					insertCount += this.initTableData(database, table, executor);
+					tableSyncLogic.syncIndex(database, table);
 				}
 			}
 			// commit;
@@ -494,13 +523,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private Integer initTableData(String database, String table, ThreadPoolExecutor executor) {
 		String querySql = String.format("select * from `%s`.`%s`", database, table);
-		Integer count = mysqlJdbcTemplate.query(new PreparedStatementCreator() {
-			@Override
-			public PreparedStatement createPreparedStatement(Connection con) throws SQLException {
-				final PreparedStatement statement = con.prepareStatement(querySql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
-				statement.setFetchSize(Integer.MIN_VALUE);
-				return statement;
-			}
+		Integer count = mysqlJdbcTemplate.query(con -> {
+			final PreparedStatement statement = con.prepareStatement(querySql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+			statement.setFetchSize(Integer.MIN_VALUE);
+			return statement;
 		}, new MyResultSetExtractor(database, table, executor));
 		return count;
 	}

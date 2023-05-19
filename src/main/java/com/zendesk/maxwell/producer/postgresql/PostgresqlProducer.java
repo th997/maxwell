@@ -59,7 +59,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
 		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
-		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "500000"));
+		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "160000"));
 		maxPoolSize = Integer.parseInt(pgProperties.getProperty("maxPoolSize", "10"));
 		syncIndexMinute = Integer.parseInt(pgProperties.getProperty("syncIndexMinute", "600"));
 		// init data
@@ -116,9 +116,6 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Long now = System.currentTimeMillis();
 		if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
 			this.batchUpdate(sqlList);
-		}
-		if (!r.shouldOutput(outputConfig)) {
-			return;
 		}
 		if (!syncDbs.contains(r.getDatabase())) {
 			return;

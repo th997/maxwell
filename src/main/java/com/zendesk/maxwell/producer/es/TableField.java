@@ -1,0 +1,103 @@
+package com.zendesk.maxwell.producer.es;
+
+public class TableField {
+	private String columnName;
+	private String columnType;
+	private String dataType;
+	private Long strLen;
+	private Integer numericPrecision;
+	private Integer numericScale;
+	private String columnDefault;
+	private boolean nullAble;
+	private boolean pri;
+	private boolean autoIncrement;
+	private String columnComment;
+
+	public String getColumnName() {
+		return columnName;
+	}
+
+	public void setColumnName(String columnName) {
+		this.columnName = columnName;
+	}
+
+	public String getColumnType() {
+		return columnType;
+	}
+
+	public void setColumnType(String columnType) {
+		this.columnType = columnType;
+	}
+
+	public String getDataType() {
+		return dataType;
+	}
+
+	public void setDataType(String dataType) {
+		this.dataType = dataType;
+	}
+
+	public Long getStrLen() {
+		return strLen;
+	}
+
+	public void setStrLen(Long strLen) {
+		this.strLen = strLen;
+	}
+
+	public Integer getNumericPrecision() {
+		return numericPrecision;
+	}
+
+	public void setNumericPrecision(Integer numericPrecision) {
+		this.numericPrecision = numericPrecision;
+	}
+
+	public Integer getNumericScale() {
+		return numericScale;
+	}
+
+	public void setNumericScale(Integer numericScale) {
+		this.numericScale = numericScale;
+	}
+
+	public String getColumnDefault() {
+		return columnDefault;
+	}
+
+	public void setColumnDefault(String columnDefault) {
+		this.columnDefault = columnDefault;
+	}
+
+	public boolean isNullAble() {
+		return nullAble;
+	}
+
+	public void setNullAble(boolean nullAble) {
+		this.nullAble = nullAble;
+	}
+
+	public boolean isPri() {
+		return pri;
+	}
+
+	public void setPri(boolean pri) {
+		this.pri = pri;
+	}
+
+	public boolean isAutoIncrement() {
+		return autoIncrement;
+	}
+
+	public void setAutoIncrement(boolean autoIncrement) {
+		this.autoIncrement = autoIncrement;
+	}
+
+	public String getColumnComment() {
+		return columnComment;
+	}
+
+	public void setColumnComment(String columnComment) {
+		this.columnComment = columnComment;
+	}
+}

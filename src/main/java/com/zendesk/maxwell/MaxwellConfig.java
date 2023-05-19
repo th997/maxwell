@@ -123,6 +123,11 @@ public class MaxwellConfig extends AbstractConfig {
 	public final Properties pgProperties;
 
 	/**
+	 * Properties object containing all configuration options beginning with "elasticsearch."
+	 */
+	public final Properties esProperties;
+
+	/**
 	 * Main kafka topic to produce to
 	 */
 	public String kafkaTopic;
@@ -641,6 +646,7 @@ public class MaxwellConfig extends AbstractConfig {
 		this.customProducerProperties = new Properties();
 		this.kafkaProperties = new Properties();
 		this.pgProperties = new Properties();
+		this.esProperties = new Properties();
 		this.replayMode = false;
 		this.replicationMysql = new MaxwellMysqlConfig();
 		this.maxwellMysql = new MaxwellMysqlConfig();
@@ -1137,6 +1143,8 @@ public class MaxwellConfig extends AbstractConfig {
 					this.kafkaProperties.setProperty(k.replace("kafka.", ""), properties.getProperty(k));
 				} else if (k.startsWith("postgresql.")) {
 					this.pgProperties.setProperty(k.replace("postgresql.", ""), properties.getProperty(k));
+				} else if (k.startsWith("elasticsearch.")) {
+					this.esProperties.setProperty(k.replace("elasticsearch.", ""), properties.getProperty(k));
 				}
 			}
 		}

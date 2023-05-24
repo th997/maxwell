@@ -1,14 +1,34 @@
 package com.zendesk.maxwell.producer.es;
 
+import java.util.Map;
+
 public class ESTableConfig {
 	private String targetName;
 	private Integer numberOfShards;
 	private Integer numberOfReplicas;
 	private Integer maxResultWindow;
+	private Map<String, String> typeMap;
 	private String[] sourceKeys;
 	private String[] targetKeys;
 	private String[] sourceFields;
 	private String[] targetFields;
+	private String delTagField;
+
+	public Map<String, String> getTypeMap() {
+		return typeMap;
+	}
+
+	public void setTypeMap(Map<String, String> typeMap) {
+		this.typeMap = typeMap;
+	}
+
+	public String getDelTagField() {
+		return delTagField;
+	}
+
+	public void setDelTagField(String delTagField) {
+		this.delTagField = delTagField;
+	}
 
 	public Integer getNumberOfShards() {
 		return numberOfShards;

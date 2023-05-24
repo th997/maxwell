@@ -3,6 +3,7 @@ package com.zendesk.maxwell.producer.es;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.CaseFormat;
+import com.google.common.base.CharMatcher;
 import com.google.common.collect.ImmutableMap;
 import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.producer.AbstractProducer;
@@ -68,6 +69,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	private static final String SQL_MYSQL_FIELD = "select column_name,column_type,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' auto_increment from information_schema.columns t where t.table_schema =? and table_name =?";
 	private static final String SQL_MYSQL_DBS = "select schema_name from information_schema.schemata";
 	private static final String SQL_MYSQL_TABLE = "select table_name from information_schema.tables where table_type != 'VIEW' and table_schema =?";
+	private static final CharMatcher UPPER_CASE_MATCHER = CharMatcher.inRange('A', 'Z');
 	static final Logger LOG = LoggerFactory.getLogger(ESProducer.class);
 	private ObjectMapper om;
 	private Properties esProperties;
@@ -239,17 +241,16 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		Map<String, Object> properties = new HashMap<>();
 		if (config.getSourceFields() == null) {
 			for (TableField tableFiled : fieldMap.values()) {
-				if (tableFiled.getDataType().endsWith("char")) {
-					properties.put(tableFiled.getColumnName(), ImmutableMap.of("type", "keyword"));
-				}
+				Map<String, String> type = this.getTypeProp(config, tableFiled);
+				Optional.ofNullable(type).ifPresent(o -> properties.put(tableFiled.getColumnName(), o));
 			}
 		} else {
 			String[] fields = config.getSourceFields();
 			for (int i = 0; i < fields.length; i++) {
 				TableField tableFiled = fieldMap.get(fields[i]);
-				if (tableFiled.getDataType().endsWith("char")) {
-					properties.put(config.getTargetFields()[i], ImmutableMap.of("type", "keyword"));
-				}
+				Map<String, String> type = this.getTypeProp(config, tableFiled);
+				int finalI = i;
+				Optional.ofNullable(type).ifPresent(o -> properties.put(config.getTargetFields()[finalI], o));
 			}
 		}
 		Map<String, Object> mapping = ImmutableMap.of("properties", properties);
@@ -280,6 +281,41 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			settings.put("index.max_result_window", Optional.ofNullable(config.getMaxResultWindow()).orElse(maxResultWindow));
 			createIndexRequest.settings(settings);
 			client.indices().create(createIndexRequest, RequestOptions.DEFAULT);
+		}
+	}
+
+	private Map<String, String> getTypeProp(ESTableConfig config, TableField tableField) {
+		if (config.getTypeMap() != null) {
+			String type = config.getTypeMap().get(tableField.getColumnType());
+			if (type != null) {
+				return ImmutableMap.of("type", type);
+			}
+		}
+		switch (tableField.getDataType()) {
+			// string
+			case "char":
+			case "varchar":
+			case "enum":
+			case "set":
+				return tableField.getStrLen() < 256 ? ImmutableMap.of("type", "keyword") : null;
+			// number
+			case "tinyint":
+			case "smallint":
+				return ImmutableMap.of("type", "short");
+			case "int":
+			case "mediumint":
+				return ImmutableMap.of("type", "integer");
+			case "bigint":
+			case "bit":
+				return ImmutableMap.of("type", "long");
+			case "double":
+			case "float":
+				return ImmutableMap.of("type", tableField.getDataType());
+			case "decimal":
+				return ImmutableMap.of("type", "scaled_float", "scaling_factor", tableField.getNumericScale() == null ? "1" : String.valueOf(Math.pow(10, tableField.getNumericScale())));
+			default:
+				return null;
+
 		}
 	}
 
@@ -338,7 +374,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private String getTableName(String name) {
-		if (name.indexOf('_') > 0) {
+		if (name.indexOf('_') > 0 || UPPER_CASE_MATCHER.matchesAllOf(name)) {
 			return name.toLowerCase();
 		} else {
 			return CaseFormat.UPPER_CAMEL.to(CaseFormat.LOWER_UNDERSCORE, name);
@@ -352,6 +388,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		}
 		List<DocWriteRequest> ret = new ArrayList<>();
 		// query by condition
+		MultiSearchRequest multiSearchReq = new MultiSearchRequest();
 		List<Map<String, Object>> queryList = new ArrayList<>();
 		List<Map<String, Object>> updateList = new ArrayList<>();
 		for (Map<String, Object> item : batchList) {
@@ -360,21 +397,23 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			for (int i = 0; i < keys.length; i++) {
 				query.put(config.getTargetKeys()[i], item.get(keys[i]));
 			}
-			queryList.add(query);
 			String[] fields = config.getSourceFields();
 			Map<String, Object> data = new HashMap<>(fields.length);
-			for (int i = 0; i < keys.length; i++) {
-				data.put(config.getTargetFields()[i], item.get(fields[i]));
+			boolean del = false;
+			if (config.getDelTagField() != null) {
+				Object delFile = item.get(config.getDelTagField());
+				if (delFile != null && (delFile.toString().equals("1") || delFile.toString().equalsIgnoreCase("true"))) {
+					del = true;
+				}
 			}
+			for (int i = 0; i < keys.length; i++) {
+				data.put(config.getTargetFields()[i], del ? null : item.get(fields[i]));
+			}
+			multiSearchReq.add(this.getQueryReq(tableName, query));
 			updateList.add(data);
 		}
-		// query
-		MultiSearchRequest multiSearchReq = new MultiSearchRequest();
-		for (Map<String, Object> query : queryList) {
-			SearchRequest req = this.getQueryReq(tableName, query);
-			multiSearchReq.add(req);
-		}
 		MultiSearchResponse response = client.msearch(multiSearchReq, RequestOptions.DEFAULT);
+		// query
 		MultiSearchResponse.Item[] responseItems = response.getResponses();
 		for (int i = 0; i < responseItems.length; i++) {
 			MultiSearchResponse.Item item = responseItems[i];
@@ -444,7 +483,9 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		if (flush) {
 			bulkRequest.setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
 		}
+		long start = System.currentTimeMillis();
 		BulkResponse bulkResponse = client.bulk(bulkRequest, RequestOptions.DEFAULT);
+		long time = System.currentTimeMillis() - start;
 		if (bulkResponse.hasFailures()) {
 			for (BulkItemResponse itemRes : bulkResponse) {
 				if (itemRes.isFailed()) {
@@ -457,7 +498,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				}
 			}
 		} else {
-			LOG.info("batchUpdate ret={},table={},actual={},expected={}", bulkResponse.status(), bulkRequest.getIndices(), bulkResponse.getItems().length, bulkRequest.requests().size());
+			LOG.info("batchUpdate ret={},time={},table={},actual={},expected={}", bulkResponse.status(), time, bulkRequest.getIndices(), bulkResponse.getItems().length, bulkRequest.requests().size());
 		}
 	}
 

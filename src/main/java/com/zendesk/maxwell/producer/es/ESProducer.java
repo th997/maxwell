@@ -515,7 +515,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				}
 			}
 		} else {
-			LOG.info("doBulkRequest ret={},time={},result={},table={}", bulkResponse.status(), time, bulkResponse.getItems().length == bulkRequest.requests().size(), bulkRequest.getIndices());
+			LOG.info("doBulkRequest ret={},size={},time={},result={},table={}", bulkResponse.status(), bulkRequest.requests().size(), time, bulkResponse.getItems().length == bulkRequest.requests().size(), bulkRequest.getIndices());
 		}
 	}
 

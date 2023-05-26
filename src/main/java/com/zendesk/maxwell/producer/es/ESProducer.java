@@ -55,7 +55,9 @@ import org.springframework.transaction.support.DefaultTransactionDefinition;
 
 import java.io.IOException;
 import java.sql.*;
-import java.util.Date;
+import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Function;
@@ -69,6 +71,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	private static final String SQL_MYSQL_FIELD = "select column_name,column_type,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' auto_increment from information_schema.columns t where t.table_schema =? and table_name =?";
 	private static final String SQL_MYSQL_DBS = "select schema_name from information_schema.schemata";
 	private static final String SQL_MYSQL_TABLE = "select table_name from information_schema.tables where table_type != 'VIEW' and table_schema =?";
+	private static final String DATE_TIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
 	private static final CharMatcher UPPER_CASE_MATCHER = CharMatcher.inRange('A', 'Z');
 	static final Logger LOG = LoggerFactory.getLogger(ESProducer.class);
 	private ObjectMapper om;
@@ -83,6 +86,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	private Set<String> syncDbs;
 	private Pattern[] syncTablePatterns;
 	private Map<String, ESTableConfig[]> syncTableConfig;
+	private Map<String, Object> indexSettings;
 	private Integer numberOfShards;
 	private Integer numberOfReplicas;
 	private Integer maxResultWindow;
@@ -91,7 +95,6 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	private boolean initData;
 	private boolean initDataLock;
 	private Integer initDataThreadNum;
-	private boolean initDataDelete;
 	private Position initPosition = null;
 
 	public ESProducer(MaxwellContext context) throws IOException {
@@ -110,6 +113,8 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			callback.setSocketTimeout(Integer.parseInt(esProperties.getProperty("readTimeout", "60000")));
 			return callback;
 		}).setHttpClientConfigCallback(callback -> {
+			callback.setMaxConnTotal(Integer.parseInt(esProperties.getProperty("maxConnTotal", "50")));
+			callback.setMaxConnPerRoute(Integer.parseInt(esProperties.getProperty("maxConnPerRoute", "15")));
 			String userName = esProperties.getProperty("userName");
 			String password = esProperties.getProperty("password");
 			if (StringUtils.isNoneEmpty(userName, password)) {
@@ -140,21 +145,21 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		numberOfShards = Integer.parseInt(esProperties.getProperty("numberOfShards", "1"));
 		numberOfReplicas = Integer.parseInt(esProperties.getProperty("numberOfReplicas", "1"));
 		maxResultWindow = Integer.parseInt(esProperties.getProperty("maxResultWindow", "1000000"));
+		indexSettings = om.readValue(esProperties.getProperty("indexSettings", "{}"), HashMap.class);
 		// init data
 		initSchemas = "true".equalsIgnoreCase(esProperties.getProperty("initSchemas"));
 		initData = "true".equalsIgnoreCase(esProperties.getProperty("initData"));
 		initDataLock = "true".equalsIgnoreCase(esProperties.getProperty("initDataLock", "true"));
 		initDataThreadNum = Integer.parseInt(esProperties.getProperty("initDataThreadNum", "10"));
-		initDataDelete = "true".equalsIgnoreCase(esProperties.getProperty("initDataDelete"));
 		if (initSchemas) {
-			this.initTableData();
+			this.initTable();
 		}
 	}
 
 
 	@Override
 	public synchronized void push(RowMap r) throws Exception {
-		if (initSchemas) {
+		if (initSchemas && initData) {
 			synchronized (this) {
 				if (initPosition != null) {
 					context.setPosition(initPosition);
@@ -275,7 +280,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			if (!properties.isEmpty()) {
 				createIndexRequest.mapping(mapping);
 			}
-			Settings.Builder settings = Settings.builder();
+			Settings.Builder settings = Settings.builder().loadFromMap(indexSettings);
 			settings.put("index.number_of_shards", Optional.ofNullable(config.getNumberOfShards()).orElse(numberOfShards));
 			settings.put("index.number_of_replicas", Optional.ofNullable(config.getNumberOfReplicas()).orElse(numberOfReplicas));
 			settings.put("index.max_result_window", Optional.ofNullable(config.getMaxResultWindow()).orElse(maxResultWindow));
@@ -286,7 +291,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 
 	private Map<String, String> getTypeProp(ESTableConfig config, TableField tableField) {
 		if (config.getTypeMap() != null) {
-			String type = config.getTypeMap().get(tableField.getColumnType());
+			String type = config.getTypeMap().get(tableField.getColumnName());
 			if (type != null) {
 				return ImmutableMap.of("type", type);
 			}
@@ -297,10 +302,16 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			case "varchar":
 			case "enum":
 			case "set":
-				return tableField.getStrLen() < 256 ? ImmutableMap.of("type", "keyword") : null;
+				return ImmutableMap.of("type", tableField.getStrLen() <= 256 ? "keyword" : "text");
+			case "text":
+			case "tinytext":
+			case "mediumtext":
+			case "longtext":
+				return ImmutableMap.of("type", "text");
 			// number
 			case "tinyint":
 			case "smallint":
+			case "year":
 				return ImmutableMap.of("type", "short");
 			case "int":
 			case "mediumint":
@@ -313,6 +324,14 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				return ImmutableMap.of("type", tableField.getDataType());
 			case "decimal":
 				return ImmutableMap.of("type", "scaled_float", "scaling_factor", tableField.getNumericScale() == null ? "1" : String.valueOf(Math.pow(10, tableField.getNumericScale())));
+			// date
+			case "datetime":
+			case "timestamp":
+				return ImmutableMap.of("type", "date", "format", DATE_TIME_FORMAT);
+//			case "date":
+//				return ImmutableMap.of("type", "date", "format", "yyyy-MM-dd");
+//			case "time":
+//				return ImmutableMap.of("type", "date", "format", "HH:mm:ss");
 			default:
 				return null;
 
@@ -389,7 +408,6 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		List<DocWriteRequest> ret = new ArrayList<>();
 		// query by condition
 		MultiSearchRequest multiSearchReq = new MultiSearchRequest();
-		List<Map<String, Object>> queryList = new ArrayList<>();
 		List<Map<String, Object>> updateList = new ArrayList<>();
 		for (Map<String, Object> item : batchList) {
 			String[] keys = config.getSourceKeys();
@@ -406,14 +424,14 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 					del = true;
 				}
 			}
-			for (int i = 0; i < keys.length; i++) {
+			for (int i = 0; i < fields.length; i++) {
 				data.put(config.getTargetFields()[i], del ? null : item.get(fields[i]));
 			}
 			multiSearchReq.add(this.getQueryReq(tableName, query));
 			updateList.add(data);
 		}
 		MultiSearchResponse response = client.msearch(multiSearchReq, RequestOptions.DEFAULT);
-		// query
+		// get update req
 		MultiSearchResponse.Item[] responseItems = response.getResponses();
 		for (int i = 0; i < responseItems.length; i++) {
 			MultiSearchResponse.Item item = responseItems[i];
@@ -467,6 +485,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private void batchUpdate(Deque<ESReq> reqList) throws IOException {
+		lastUpdate = System.currentTimeMillis();
 		BulkRequest bulkRequest = new BulkRequest();
 		for (ESReq r : reqList) {
 			bulkRequest.add(r.getReq());
@@ -480,9 +499,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		if (bulkRequest.requests().isEmpty()) {
 			return;
 		}
-		if (flush) {
-			bulkRequest.setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
-		}
+		bulkRequest.setRefreshPolicy(flush ? WriteRequest.RefreshPolicy.IMMEDIATE : WriteRequest.RefreshPolicy.NONE);
 		long start = System.currentTimeMillis();
 		BulkResponse bulkResponse = client.bulk(bulkRequest, RequestOptions.DEFAULT);
 		long time = System.currentTimeMillis() - start;
@@ -490,15 +507,15 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			for (BulkItemResponse itemRes : bulkResponse) {
 				if (itemRes.isFailed()) {
 					if (isMsgException(itemRes.getFailure().getCause(), "document missing")) {
-						LOG.warn("batchUpdate ignore, msg={}", itemRes.getFailure());
+						LOG.warn("doBulkRequest ignore, msg={}", itemRes.getFailure());
 					} else {
-						LOG.error("batchUpdate error, msg={}", itemRes.getFailure());
+						LOG.error("doBulkRequest error, msg={}", itemRes.getFailure());
 						throw new RuntimeException("batchUpdate error");
 					}
 				}
 			}
 		} else {
-			LOG.info("batchUpdate ret={},time={},table={},actual={},expected={}", bulkResponse.status(), time, bulkRequest.getIndices(), bulkResponse.getItems().length, bulkRequest.requests().size());
+			LOG.info("doBulkRequest ret={},time={},result={},table={}", bulkResponse.status(), time, bulkResponse.getItems().length == bulkRequest.requests().size(), bulkRequest.getIndices());
 		}
 	}
 
@@ -549,7 +566,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 
 	}
 
-	private void initTableData() throws IOException {
+	private void initTable() throws IOException {
 		if (initData) {
 			Connection replicationConnection = null;
 			try {
@@ -575,7 +592,9 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				LOG.info("syncDatabase start:{}", database);
 				List<String> tables = this.getMysqlTables(database);
 				for (String table : tables) {
-					this.syncTable(database, table);
+					if (this.isTableMatch(database, table)) {
+						this.syncTable(database, table);
+					}
 				}
 				LOG.info("syncDatabase end:{}", database);
 			}
@@ -630,6 +649,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 						tableConfig.setTargetName(table);
 						tableConfigs = new ESTableConfig[]{tableConfig};
 						insertCount += this.initTableData(database, table, executor, priKeys, tableConfigs);
+						LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
 					}
 				}
 			}
@@ -643,6 +663,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 					List<TableField> priKeys = this.syncTable(database, table);
 					if (!priKeys.isEmpty() && tableConfigs != null) {
 						insertCount += this.initTableData(database, table, executor, priKeys, tableConfigs);
+						LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
 					}
 				}
 			}
@@ -661,7 +682,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				}
 			}
 		}
-		LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
+		LOG.info("all finish. insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
 	}
 
 	private Integer initTableData(String database, String table, ThreadPoolExecutor executor, List<TableField> priKeys, ESTableConfig[] tableConfigs) {
@@ -697,7 +718,6 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 
 		private void asyncBatchInsert(final List<Map<String, Object>> batchList) {
 			executor.execute(() -> {
-				long start = System.currentTimeMillis();
 				try {
 					BulkRequest bulkRequest = new BulkRequest();
 					for (ESTableConfig config : tableConfigs) {
@@ -708,7 +728,6 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				} catch (Exception e) {
 					LOG.error("asyncBatchInsert error", e);
 				}
-				LOG.info("batch init insert,db={},table={},size={},time={}", database, table, batchList.size(), System.currentTimeMillis() - start);
 			});
 		}
 
@@ -729,8 +748,10 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 					Object value = JdbcUtils.getResultSetValue(rs, i + 1);
 					if (value instanceof Boolean) {
 						value = (Boolean) value ? 1 : 0;
-					} else if (value instanceof java.sql.Timestamp || value instanceof java.sql.Date) {
-						value = new Date(((Date) value).getTime());
+					} else if (value instanceof java.util.Date) {
+						value = new SimpleDateFormat(DATE_TIME_FORMAT).format(value);
+					} else if (value instanceof LocalDateTime) {
+						value = ((LocalDateTime) value).format(DateTimeFormatter.ofPattern(DATE_TIME_FORMAT));
 					}
 					data.put(columnNames[i], value);
 				}

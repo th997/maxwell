@@ -18,6 +18,7 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.elasticsearch.action.DocWriteRequest;
+import org.elasticsearch.action.admin.indices.flush.FlushRequest;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
@@ -653,15 +654,22 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 					}
 				}
 			}
+			waitFinish(executor);
 			for (String database : syncDbs) {
 				List<String> tables = this.getMysqlTables(database);
 				for (String table : tables) {
 					if (!isTableMatch(database, table)) {
 						continue;
 					}
+					waitFinish(executor);
 					ESTableConfig[] tableConfigs = syncTableConfig.get(database + "." + table);
 					List<TableField> priKeys = this.syncTable(database, table);
 					if (!priKeys.isEmpty() && tableConfigs != null) {
+						for (ESTableConfig config : tableConfigs) {
+							FlushRequest flushRequest = new FlushRequest(getTableName(config.getTargetName()));
+							flushRequest.force(true);
+							client.indices().flush(flushRequest, RequestOptions.DEFAULT);
+						}
 						insertCount += this.initTableData(database, table, executor, priKeys, tableConfigs);
 						LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
 					}
@@ -669,6 +677,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			}
 			// commit;
 			mysqlTransactionManager.commit(status);
+			waitFinish(executor);
 		} catch (Exception e) {
 			mysqlTransactionManager.rollback(status);
 			LOG.error("sync data error", e);
@@ -683,6 +692,16 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			}
 		}
 		LOG.info("all finish. insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
+	}
+
+	private void waitFinish(ThreadPoolExecutor executor) {
+		while (executor.getCompletedTaskCount() != executor.getTaskCount()) {
+			try {
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				throw new RuntimeException(e);
+			}
+		}
 	}
 
 	private Integer initTableData(String database, String table, ThreadPoolExecutor executor, List<TableField> priKeys, ESTableConfig[] tableConfigs) {

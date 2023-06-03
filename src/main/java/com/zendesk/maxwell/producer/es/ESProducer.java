@@ -170,12 +170,13 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			}
 		}
 		Long now = System.currentTimeMillis();
-		if (now - lastUpdate > 1000 && reqList.size() > 0 && reqList.getLast().getRowMap().isTXCommit()) {
+		if (now - lastUpdate > 1000 && reqList.size() > 0) {
 			this.batchUpdate(reqList);
 		}
 		if (!r.shouldOutput(outputConfig) || !isTableMatch(r.getDatabase(), r.getTable())) {
 			return;
 		}
+		LOG.info("push:{}", toJSON(r));
 		switch (r.getRowType()) {
 			case "insert":
 			case "bootstrap-insert":
@@ -351,6 +352,9 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				if (config.getSourceFields() == null) {
 					this.simpleDml(r, config.getTargetName());
 				} else {
+					if (!reqList.isEmpty() && !reqList.getLast().getRowMap().getTable().equals(r.getTable())) {
+						this.batchUpdate(reqList);
+					}
 					List<DocWriteRequest> updateList = this.getUpdateList(config, null, Arrays.asList(r.getData()));
 					for (DocWriteRequest req : updateList) {
 						reqList.add(new ESReq(r, req));
@@ -661,14 +665,14 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 					if (!isTableMatch(database, table)) {
 						continue;
 					}
-					waitFinish(executor);
 					ESTableConfig[] tableConfigs = syncTableConfig.get(database + "." + table);
 					List<TableField> priKeys = this.syncTable(database, table);
 					if (!priKeys.isEmpty() && tableConfigs != null) {
+						waitFinish(executor);
 						for (ESTableConfig config : tableConfigs) {
-							FlushRequest flushRequest = new FlushRequest(getTableName(config.getTargetName()));
-							flushRequest.force(true);
-							client.indices().flush(flushRequest, RequestOptions.DEFAULT);
+							FlushRequest request = new FlushRequest(getTableName(config.getTargetName()));
+							request.force(true);
+							client.indices().flush(request, RequestOptions.DEFAULT);
 						}
 						insertCount += this.initTableData(database, table, executor, priKeys, tableConfigs);
 						LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
@@ -695,7 +699,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private void waitFinish(ThreadPoolExecutor executor) {
-		while (executor.getCompletedTaskCount() != executor.getTaskCount()) {
+		while (executor.getTaskCount() != executor.getCompletedTaskCount()) {
 			try {
 				Thread.sleep(100);
 			} catch (InterruptedException e) {

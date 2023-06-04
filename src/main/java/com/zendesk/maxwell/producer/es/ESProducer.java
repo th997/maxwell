@@ -170,7 +170,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			}
 		}
 		Long now = System.currentTimeMillis();
-		if (now - lastUpdate > 1000 && reqList.size() > 0) {
+		if (now - lastUpdate > 1000) {
 			this.batchUpdate(reqList);
 		}
 		if (!r.shouldOutput(outputConfig) || !isTableMatch(r.getDatabase(), r.getTable())) {
@@ -491,6 +491,9 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 
 	private void batchUpdate(Deque<ESReq> reqList) throws IOException {
 		lastUpdate = System.currentTimeMillis();
+		if (reqList.isEmpty()) {
+			return;
+		}
 		BulkRequest bulkRequest = new BulkRequest();
 		for (ESReq r : reqList) {
 			bulkRequest.add(r.getReq());

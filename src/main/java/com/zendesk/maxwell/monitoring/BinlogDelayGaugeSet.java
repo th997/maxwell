@@ -13,7 +13,6 @@ import java.util.Map;
 
 public class BinlogDelayGaugeSet implements MetricSet {
 	static final Logger LOG = LoggerFactory.getLogger(BinlogDelayGaugeSet.class);
-
 	private MaxwellContext context;
 
 	public BinlogDelayGaugeSet(MaxwellContext context) {
@@ -25,7 +24,7 @@ public class BinlogDelayGaugeSet implements MetricSet {
 	public Map<String, Metric> getMetrics() {
 		return ImmutableMap.of( //
 			"delay.second", (Gauge) () -> this.getDelaySecond(),//
-			"delay.delay", (Gauge) () -> this.getDelaySecond() > context.getConfig().metricsConsumerDelayAlert
+			"delay.hit", (Gauge) () -> this.getDelaySecond() > context.getConfig().metricsConsumerDelayAlert
 		);
 	}
 

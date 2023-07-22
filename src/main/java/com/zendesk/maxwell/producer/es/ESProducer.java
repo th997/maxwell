@@ -223,6 +223,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				}
 			}
 		}
+		tableMatchCache.put(fullName, isMatch);
 		return isMatch;
 	}
 
@@ -382,7 +383,8 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			id = StringUtils.join(r.getPrimaryKeyValues(), "_");
 		}
 		switch (r.getRowType()) {
-			case "insert": {
+			case "insert":
+			case "bootstrap-insert": {
 				IndexRequest req = new IndexRequest(tableName);
 				req.id(id.toString());
 				req.source(r.getData());

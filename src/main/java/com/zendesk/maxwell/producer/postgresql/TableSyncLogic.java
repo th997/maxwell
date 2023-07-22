@@ -252,7 +252,7 @@ public class TableSyncLogic {
 					return true;
 				}
 			} catch (Throwable e) {
-				LOG.warn("ddlRename error,sql={}", sql, e);
+				LOG.error("ddlRename error,sql={}", sql, e);
 			}
 			return false;
 		}
@@ -282,7 +282,7 @@ public class TableSyncLogic {
 				this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), oldName, newName));
 				return true;
 			} catch (Throwable e) {
-				LOG.warn("ddlRename error,sql={}", sql, e);
+				LOG.error("ddlRename error,sql={}", sql, e);
 			}
 		}
 		return false;

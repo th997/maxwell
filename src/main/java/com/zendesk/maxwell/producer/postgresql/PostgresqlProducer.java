@@ -46,6 +46,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private Integer maxPoolSize;
 	private Integer syncIndexMinute;
 	private boolean initSchemas;
+	private boolean resolvePkConflict;
 	// init data
 	private boolean initData;
 	private boolean initDataLock;
@@ -57,6 +58,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		super(context);
 		context.getConfig().outputConfig.byte2base64 = false;
 		pgProperties = context.getConfig().pgProperties;
+		resolvePkConflict = "true".equalsIgnoreCase(pgProperties.getProperty("resolvePkConflict", "true"));
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
 		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
@@ -306,7 +308,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		sqlV.deleteCharAt(sqlV.length() - 1);
 		// insert into %s.%s(%s) values(%s) on conflict(%s) do nothing
 		sql.append("insert into ").append(delimitPg(r.getDatabase(), r.getTable())).append("(").append(sqlK).append(") values(").append(sqlV).append(")");
-		if (!r.getPrimaryKeyColumns().isEmpty()) {
+		if (resolvePkConflict && !r.getPrimaryKeyColumns().isEmpty()) {
 			sql.append(" on conflict(").append(delimitPg(StringUtils.join(r.getPrimaryKeyColumns(), delimitPg(",")))).append(") do nothing");
 		}
 		return new UpdateSql(sql.toString(), args, r);

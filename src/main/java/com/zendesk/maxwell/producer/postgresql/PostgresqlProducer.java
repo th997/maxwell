@@ -1,7 +1,9 @@
 package com.zendesk.maxwell.producer.postgresql;
 
+import com.codahale.metrics.MetricRegistry;
 import com.mchange.v2.c3p0.ComboPooledDataSource;
 import com.zendesk.maxwell.MaxwellContext;
+import com.zendesk.maxwell.monitoring.BinlogDelayGaugeSet;
 import com.zendesk.maxwell.producer.AbstractProducer;
 import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.row.RowMap;
@@ -96,6 +98,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		} else if (syncIndexMinute > 0) {
 			this.startSyncIndexTask(syncIndexMinute);
 		}
+		context.getMetrics().register(MetricRegistry.name("binlog", "consumer"), new BinlogDelayGaugeSet(context));
 	}
 
 	@Override
@@ -138,8 +141,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				this.batchUpdate(sqlList);
 				if (r.getTable() != null) {
 					LOG.info("ddl={}", this.toJSON(r));
-					tableSyncLogic.ddlRename(r);
-					tableSyncLogic.syncTable(r.getDatabase(), r.getTable());
+					if (!tableSyncLogic.ddlRename(r)) {
+						tableSyncLogic.syncTable(r.getDatabase(), r.getTable());
+					}
 					this.context.setPosition(r);
 				} else {
 					LOG.warn("unrecognizable ddl:{}", toJSON(r));
@@ -239,7 +243,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			UpdateSqlGroup group;
 			// PreparedStatement can have at most 65,535 parameters
 			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql()) //
-					|| ("delete".equals(ret.getLast().getLastRowMap().getRowType()) && ret.getLast().getArgsList().size() * ret.getLast().getArgsList().get(0).length >= 65000)) {
+				|| ("delete".equals(ret.getLast().getLastRowMap().getRowType()) && ret.getLast().getArgsList().size() * ret.getLast().getArgsList().get(0).length >= 65000)) {
 				group = new UpdateSqlGroup(sql.getSql());
 				ret.add(group);
 			} else {
@@ -254,7 +258,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
 				Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
 				String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ")  //
-						.append(delimitPg(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
+					.append(delimitPg(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
 				List<Object[]> argsList = new ArrayList<>();
 				argsList.add(ids);
 				group.setSql(sql);
@@ -480,7 +484,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		// not start transaction with consistent snapshot
 		boolean transactionStart = false;
 		ThreadPoolExecutor executor = new ThreadPoolExecutor(initDataThreadNum, initDataThreadNum, 0L, TimeUnit.MILLISECONDS,
-				new LinkedBlockingQueue<>(initDataThreadNum), Executors.defaultThreadFactory(), new ThreadPoolExecutor.CallerRunsPolicy());
+			new LinkedBlockingQueue<>(initDataThreadNum), Executors.defaultThreadFactory(), new ThreadPoolExecutor.CallerRunsPolicy());
 		Integer insertCount = 0;
 		try {
 			for (String database : syncDbs) {

@@ -1,11 +1,13 @@
 package com.zendesk.maxwell.producer.es;
 
+import com.codahale.metrics.MetricRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.CaseFormat;
 import com.google.common.base.CharMatcher;
 import com.google.common.collect.ImmutableMap;
 import com.zendesk.maxwell.MaxwellContext;
+import com.zendesk.maxwell.monitoring.BinlogDelayGaugeSet;
 import com.zendesk.maxwell.producer.AbstractProducer;
 import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.row.RowMap;
@@ -86,6 +88,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	private Integer batchTransactionLimit;
 	private Set<String> syncDbs;
 	private Pattern[] syncTablePatterns;
+	private Map<String, Boolean> tableMatchCache = new HashMap<>();
 	private Map<String, ESTableConfig[]> syncTableConfig;
 	private Map<String, Object> indexSettings;
 	private Integer numberOfShards;
@@ -155,19 +158,18 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		if (initSchemas) {
 			this.initTable();
 		}
+		context.getMetrics().register(MetricRegistry.name("binlog", "consumer"), new BinlogDelayGaugeSet(context));
 	}
 
 
 	@Override
 	public synchronized void push(RowMap r) throws Exception {
 		if (initSchemas && initData) {
-			synchronized (this) {
-				if (initPosition != null) {
-					context.setPosition(initPosition);
-				}
-				LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", context.getPosition());
-				System.exit(0);
+			if (initPosition != null) {
+				context.setPosition(initPosition);
 			}
+			LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", context.getPosition());
+			System.exit(0);
 		}
 		Long now = System.currentTimeMillis();
 		if (now - lastUpdate > 1000) {
@@ -207,14 +209,18 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private boolean isTableMatch(String database, String table) {
-		if (!syncDbs.contains(database)) {
-			return false;
-		}
-		boolean isMatch = false;
 		String fullName = database + "." + table;
-		for (Pattern syncTablePattern : syncTablePatterns) {
-			if (syncTablePattern.matcher(fullName).matches()) {
-				isMatch = true;
+		Boolean isMatch = tableMatchCache.get(fullName);
+		if (isMatch != null) {
+			return isMatch;
+		}
+		isMatch = false;
+		if (syncDbs.contains(database)) {
+			for (Pattern syncTablePattern : syncTablePatterns) {
+				if (syncTablePattern.matcher(fullName).matches()) {
+					isMatch = true;
+					break;
+				}
 			}
 		}
 		return isMatch;

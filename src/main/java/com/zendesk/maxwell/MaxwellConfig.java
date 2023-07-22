@@ -399,6 +399,11 @@ public class MaxwellConfig extends AbstractConfig {
 	public int metricsDatadogPort;
 
 	/**
+	 * second of consumer delay alert
+	 */
+	public int metricsConsumerDelayAlert;
+
+	/**
 	 * time in seconds between datadog metrics pushes
 	 */
 	public Long metricsDatadogInterval;
@@ -982,6 +987,7 @@ public class MaxwellConfig extends AbstractConfig {
 		parser.accepts( "metrics_datadog_site", "the site to publish metrics to when metrics_datadog_type = http, one of us|eu, default us" ).withRequiredArg();
 		parser.accepts( "metrics_datadog_host", "the host to publish metrics to when metrics_datadog_type = udp" ).withRequiredArg();
 		parser.accepts( "metrics_datadog_port", "the port to publish metrics to when metrics_datadog_type = udp" ).withRequiredArg().ofType(Integer.class);
+		parser.accepts( "metrics_consumer_delay_alert", "second of consumer delay alert" ).withRequiredArg().ofType(Integer.class);
 
 
 		parser.section("http");
@@ -1181,6 +1187,7 @@ public class MaxwellConfig extends AbstractConfig {
 		this.metricsDatadogSite = fetchStringOption("metrics_datadog_site", options, properties, "us");
 		this.metricsDatadogHost = fetchStringOption("metrics_datadog_host", options, properties, "localhost");
 		this.metricsDatadogPort = fetchIntegerOption("metrics_datadog_port", options, properties, 8125);
+		this.metricsConsumerDelayAlert = fetchIntegerOption("metrics_consumer_delay_alert", options, properties, 600);
 		this.metricsDatadogInterval = fetchLongOption("metrics_datadog_interval", options, properties, 60L);
 		this.metricsJvm = fetchBooleanOption("metrics_jvm", options, properties, false);
 		this.metricsAgeSlo = fetchIntegerOption("metrics_age_slo", options, properties, Integer.MAX_VALUE);

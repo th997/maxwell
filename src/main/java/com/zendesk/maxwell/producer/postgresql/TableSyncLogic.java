@@ -216,13 +216,13 @@ public class TableSyncLogic {
 		return mysqlJdbcTemplate.queryForList(SQL_MYSQL_DBS, String.class);
 	}
 
-	public void ddlRename(RowMap r) {
+	public boolean ddlRename(RowMap r) {
 		if (!(r instanceof DDLMap)) {
-			return;
+			return false;
 		}
 		String sql = ((DDLMap) r).getSql();
 		if (sql == null) {
-			return;
+			return false;
 		}
 		// /* xxx */ alter table xxx
 		if (sql.startsWith("/*")) {
@@ -236,42 +236,43 @@ public class TableSyncLogic {
 		// rename table xx to xx;
 		// alter table xx rename to xx;
 		if ((arr.length >= 5 && arr[0].equalsIgnoreCase("rename") // 1
-				&& arr[1].equalsIgnoreCase("table") // 1
-				&& arr[3].equalsIgnoreCase("to") // 1
-				&& !arr[2].equalsIgnoreCase(arr[4])) // 1
-				|| (arr.length >= 6 && arr[0].equalsIgnoreCase("alter") // 2
-				&& arr[1].equalsIgnoreCase("table") // 2
-				&& arr[3].equalsIgnoreCase("rename")// 2
-				&& arr[4].equalsIgnoreCase("to")// 2
-				&& !arr[2].equalsIgnoreCase(arr[5]))) {
+			&& arr[1].equalsIgnoreCase("table") // 1
+			&& arr[3].equalsIgnoreCase("to") // 1
+			&& !arr[2].equalsIgnoreCase(arr[4])) // 1
+			|| (arr.length >= 6 && arr[0].equalsIgnoreCase("alter") // 2
+			&& arr[1].equalsIgnoreCase("table") // 2
+			&& arr[3].equalsIgnoreCase("rename")// 2
+			&& arr[4].equalsIgnoreCase("to")// 2
+			&& !arr[2].equalsIgnoreCase(arr[5]))) {
 			String alterSql = "alter table \"%s\".\"%s\" rename to \"%s\"";
 			try {
 				if (((DDLMap) r).getChange() instanceof ResolvedTableAlter) {
 					ResolvedTableAlter change = (ResolvedTableAlter) ((DDLMap) r).getChange();
 					this.executeDDL(String.format(alterSql, change.oldTable.getDatabase(), change.oldTable.getName(), change.newTable.getName()));
+					return true;
 				}
 			} catch (Throwable e) {
 				LOG.warn("ddlRename error,sql={}", sql, e);
 			}
-			return;
+			return false;
 		}
 		String oldName = null;
 		String newName = null;
 		// alter table xxx rename column column_old to column_new
 		if (arr.length >= 8 && arr[0].equalsIgnoreCase("alter") //
-				&& arr[1].equalsIgnoreCase("table") //
-				&& arr[3].equalsIgnoreCase("rename") //
-				&& arr[4].equalsIgnoreCase("column") //
-				&& arr[6].equalsIgnoreCase("to") //
-				&& !arr[5].equalsIgnoreCase(arr[7])) {
+			&& arr[1].equalsIgnoreCase("table") //
+			&& arr[3].equalsIgnoreCase("rename") //
+			&& arr[4].equalsIgnoreCase("column") //
+			&& arr[6].equalsIgnoreCase("to") //
+			&& !arr[5].equalsIgnoreCase(arr[7])) {
 			oldName = arr[5];
 			newName = arr[7];
 		}
 		// alter table xxx change column_old column_new xxx
 		if (arr.length > 6 && arr[0].equalsIgnoreCase("alter") //
-				&& arr[1].equalsIgnoreCase("table") //
-				&& arr[3].equalsIgnoreCase("change") //
-				&& !arr[4].equalsIgnoreCase(arr[5])) {
+			&& arr[1].equalsIgnoreCase("table") //
+			&& arr[3].equalsIgnoreCase("change") //
+			&& !arr[4].equalsIgnoreCase(arr[5])) {
 			oldName = arr[4];
 			newName = arr[5];
 		}
@@ -279,9 +280,11 @@ public class TableSyncLogic {
 			String alterSql = "alter table \"%s\".\"%s\" rename column \"%s\" to \"%s\"";
 			try {
 				this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), oldName, newName));
+				return true;
 			} catch (Throwable e) {
 				LOG.warn("ddlRename error,sql={}", sql, e);
 			}
 		}
+		return false;
 	}
 }

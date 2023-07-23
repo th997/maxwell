@@ -40,6 +40,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private volatile Long lastUpdate = System.currentTimeMillis();
 	private Set<String> syncDbs;
 	private Set<String> asyncCommitTables;
+	private boolean delay2AsyncCommit;
 
 	private Integer batchLimit;
 	private Integer batchTransactionLimit;
@@ -61,6 +62,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		resolvePkConflict = "true".equalsIgnoreCase(pgProperties.getProperty("resolvePkConflict", "true"));
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
 		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
+		delay2AsyncCommit = "true".equalsIgnoreCase(pgProperties.getProperty("delay2AsyncCommit", "true"));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
 		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
 		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "160000"));
@@ -183,7 +185,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Deque<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
 		TransactionStatus status = pgTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
-			if (groupList.size() == 1 && asyncCommitTables.contains(rowMap.getTable())) {
+			if (groupList.size() == 1 && asyncCommitTables.contains(rowMap.getTable()) || this.isDelay2Async()) {
 				postgresJdbcTemplate.execute("set local synchronous_commit = off");
 			}
 			for (UpdateSqlGroup group : groupList) {
@@ -363,6 +365,15 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		// delete from "%s"."%s" where %s
 		String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ").append(sqlPri).toString();
 		return new UpdateSql(sql, args, r);
+	}
+
+	private boolean isDelay2Async() {
+		try {
+			return delay2AsyncCommit && (System.currentTimeMillis() - context.getPosition().getLastHeartbeatRead()) > context.getConfig().metricsConsumerDelayAlert * 1000L / 2;
+		} catch (SQLException e) {
+			LOG.error("getPosition error", e);
+			return false;
+		}
 	}
 
 	public String delimitPg(String... keys) {

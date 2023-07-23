@@ -157,6 +157,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			case "bootstrap-complete":
 				LOG.info("bootstrap:" + this.toJSON(r));
 				break;
+			case "heartbeat":
+				break;
 			default:
 				this.batchUpdate(sqlList);
 				LOG.warn("unrecognizable type:{}", toJSON(r));

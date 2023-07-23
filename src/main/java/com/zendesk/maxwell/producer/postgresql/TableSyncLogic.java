@@ -244,7 +244,7 @@ public class TableSyncLogic {
 			&& arr[3].equalsIgnoreCase("rename")// 2
 			&& arr[4].equalsIgnoreCase("to")// 2
 			&& !arr[2].equalsIgnoreCase(arr[5]))) {
-			String alterSql = "alter table \"%s\".\"%s\" rename to \"%s\"";
+			String alterSql = "alter table if exists \"%s\".\"%s\" rename to \"%s\"";
 			try {
 				if (((DDLMap) r).getChange() instanceof ResolvedTableAlter) {
 					ResolvedTableAlter change = (ResolvedTableAlter) ((DDLMap) r).getChange();

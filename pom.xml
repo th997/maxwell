@@ -4,7 +4,7 @@
 
   <groupId>com.zendesk</groupId>
   <artifactId>maxwell</artifactId>
-  <version>1.39.2</version>
+  <version>1.40.2</version>
   <packaging>jar</packaging>
 
   <name>maxwell</name>
@@ -41,9 +41,9 @@
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <mockito.version>3.7.7</mockito.version>
+    <mockito.version>3.12.4</mockito.version>
     <opencensus.version>0.28.3</opencensus.version>
-    <aws-java.version>1.12.99</aws-java.version>
+    <aws-java.version>1.12.327</aws-java.version>
   </properties>
 
   <profiles>
@@ -123,6 +123,19 @@
         </dependency>
       </dependencies>
     </profile>
+    <profile>
+      <id>kafka-3.4.0</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.kafka</groupId>
+          <artifactId>kafka-clients</artifactId>
+          <version>3.4.0</version>
+        </dependency>
+      </dependencies>
+    </profile>
   </profiles>
 
   <dependencies>
@@ -155,12 +168,17 @@
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-core</artifactId>
-      <version>2.13.4</version>
+      <version>2.14.0</version>
     </dependency>
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>2.13.4.1</version>
+      <version>2.14.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-annotations</artifactId>
+      <version>2.14.0</version>
     </dependency>
     <dependency>
       <groupId>org.jgroups</groupId>
@@ -218,70 +236,6 @@
       <groupId>me.tongfei</groupId>
       <artifactId>progressbar</artifactId>
       <version>0.6.0</version>
-    </dependency>
-
-    <!-- metrics -->
-    <dependency>
-      <groupId>io.dropwizard.metrics</groupId>
-      <artifactId>metrics-core</artifactId>
-      <version>4.1.17</version>
-    </dependency>
-    <dependency>
-      <groupId>io.dropwizard.metrics</groupId>
-      <artifactId>metrics-servlets</artifactId>
-      <version>4.1.17</version>
-    </dependency>
-    <dependency>
-      <groupId>io.dropwizard.metrics</groupId>
-      <artifactId>metrics-jmx</artifactId>
-      <version>4.1.17</version>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-server</artifactId>
-      <version>10.0.12</version>
-    </dependency>
-    <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-servlet</artifactId>
-      <version>10.0.12</version>
-    </dependency>
-    <dependency>
-      <groupId>com.viafoura</groupId>
-      <artifactId>metrics-datadog</artifactId>
-      <version>2.0.0-RC3</version>
-    </dependency>
-    <dependency>
-      <groupId>io.prometheus</groupId>
-      <artifactId>simpleclient_dropwizard</artifactId>
-      <version>0.9.0</version>
-    </dependency>
-    <dependency>
-      <groupId>io.prometheus</groupId>
-      <artifactId>simpleclient_servlet</artifactId>
-      <version>0.9.0</version>
-    </dependency>
-    <!-- OpenCensus used for pushing metrics to stackdriver -->
-    <dependency>
-        <groupId>io.opencensus</groupId>
-        <artifactId>opencensus-contrib-dropwizard</artifactId>
-        <version>${opencensus.version}</version>
-    </dependency>
-    <dependency>
-        <groupId>io.opencensus</groupId>
-        <artifactId>opencensus-api</artifactId>
-        <version>${opencensus.version}</version>
-    </dependency>
-    <dependency>
-        <groupId>io.opencensus</groupId>
-        <artifactId>opencensus-impl</artifactId>
-        <version>${opencensus.version}</version>
-        <scope>runtime</scope>
-    </dependency>
-    <dependency>
-        <groupId>io.opencensus</groupId>
-        <artifactId>opencensus-exporter-stats-stackdriver</artifactId>
-        <version>${opencensus.version}</version>
     </dependency>
 
     <!-- producer libs -->
@@ -354,7 +308,7 @@
     <dependency>
       <groupId>com.google.cloud</groupId>
       <artifactId>google-cloud-pubsub</artifactId>
-      <version>1.115.1</version>
+      <version>1.120.24</version>
     </dependency>
     <dependency>
       <groupId>io.nats</groupId>
@@ -370,6 +324,70 @@
       <groupId>redis.clients</groupId>
       <artifactId>jedis</artifactId>
       <version>3.5.1</version>
+    </dependency>
+    
+    <!-- metrics -->
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-core</artifactId>
+      <version>4.1.17</version>
+    </dependency>
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-servlets</artifactId>
+      <version>4.1.17</version>
+    </dependency>
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-jmx</artifactId>
+      <version>4.1.17</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-server</artifactId>
+      <version>10.0.14</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-servlet</artifactId>
+      <version>10.0.12</version>
+    </dependency>
+    <dependency>
+      <groupId>com.viafoura</groupId>
+      <artifactId>metrics-datadog</artifactId>
+      <version>2.0.0-RC3</version>
+    </dependency>
+    <dependency>
+      <groupId>io.prometheus</groupId>
+      <artifactId>simpleclient_dropwizard</artifactId>
+      <version>0.9.0</version>
+    </dependency>
+    <dependency>
+      <groupId>io.prometheus</groupId>
+      <artifactId>simpleclient_servlet</artifactId>
+      <version>0.9.0</version>
+    </dependency>
+    <!-- OpenCensus used for pushing metrics to stackdriver -->
+    <dependency>
+        <groupId>io.opencensus</groupId>
+        <artifactId>opencensus-contrib-dropwizard</artifactId>
+        <version>${opencensus.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>io.opencensus</groupId>
+        <artifactId>opencensus-api</artifactId>
+        <version>${opencensus.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>io.opencensus</groupId>
+        <artifactId>opencensus-impl</artifactId>
+        <version>${opencensus.version}</version>
+        <scope>runtime</scope>
+    </dependency>
+    <dependency>
+        <groupId>io.opencensus</groupId>
+        <artifactId>opencensus-exporter-stats-stackdriver</artifactId>
+        <version>${opencensus.version}</version>
     </dependency>
 
     <!-- test -->
@@ -420,6 +438,14 @@
           <autoReleaseAfterClose>true</autoReleaseAfterClose>
           <stagingProgressTimeoutMinutes>10</stagingProgressTimeoutMinutes>
           <keepStagingRepositoryOnCloseRuleFailure>true</keepStagingRepositoryOnCloseRuleFailure>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Allow Mockito to access the test classe private variables -->
+          <argLine>--add-opens java.base/java.util=ALL-UNNAMED</argLine>
         </configuration>
       </plugin>
       <plugin>

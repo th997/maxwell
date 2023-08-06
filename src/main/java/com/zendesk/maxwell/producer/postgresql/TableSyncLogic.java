@@ -13,6 +13,8 @@ import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -30,7 +32,7 @@ public class TableSyncLogic {
 	//private static final String SQL_GET_POSTGRES_INDEX = "select indexname key_name,indexdef index_def from pg_catalog.pg_indexes where schemaname=? and tablename=?";
 	private static final String SQL_GET_MYSQL_INDEX = "show index from `%s`.`%s`";
 
-	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,udt_name data_type,character_maximum_length str_len,column_default,is_nullable = 'YES' null_able from information_schema.columns t where t.table_schema =? and table_name =?";
+	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,udt_name data_type,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able from information_schema.columns t where t.table_schema =? and table_name =?";
 	private static final String SQL_GET_MYSQL_FIELD = "select column_name,column_type,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' auto_increment from information_schema.columns t where t.table_schema =? and table_name =?";
 	private static final String SQL_GET_MYSQL_TABLE = "select table_name from information_schema.tables where table_type != 'VIEW' and table_schema =?";
 
@@ -45,6 +47,7 @@ public class TableSyncLogic {
 
 	private JdbcTemplate postgresJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
+	private ExecutorService executorService = Executors.newSingleThreadExecutor();
 
 	public TableSyncLogic(JdbcTemplate mysqlJdbcTemplate, JdbcTemplate postgresJdbcTemplate) {
 		this.mysqlJdbcTemplate = mysqlJdbcTemplate;
@@ -127,7 +130,11 @@ public class TableSyncLogic {
 			postgresJdbcTemplate.batchUpdate(commentSqlList.toArray(new String[commentSqlList.size()]));
 		}
 		if (syncIndex) {
-			this.syncIndex(database, table);
+			if (postgresFields.isEmpty()) {
+				this.syncIndex(database, table);
+			} else {
+				executorService.submit(() -> syncIndex(database, table));
+			}
 		}
 		LOG.info("syncTable end:{}.{}", database, table);
 		return true;
@@ -136,6 +143,15 @@ public class TableSyncLogic {
 	public void syncIndex(String database, String table) {
 		Map<String, List<TableIndex>> mysqlGroup = this.getMysqlIndex(database, table);
 		Map<String, List<TableIndex>> postgresGroup = this.getPostgresIndex(database, table);
+		Iterator<Map.Entry<String, List<TableIndex>>> it = postgresGroup.entrySet().iterator();
+		while (it.hasNext()) {
+			Map.Entry<String, List<TableIndex>> e = it.next();
+			TableIndex index0 = e.getValue().get(0);
+			if (!index0.isNonUnique() && !index0.isPri()) {
+				this.executeDDL(String.format("drop index if exists \"%s\".\"%s\"", database, index0.getKeyName()));
+				it.remove();
+			}
+		}
 		MapDifference<String, List<TableIndex>> diff = Maps.difference(mysqlGroup, postgresGroup);
 		String pgIndexPrefix = table + "_";
 		for (List<TableIndex> index : diff.entriesOnlyOnRight().values()) {
@@ -151,7 +167,8 @@ public class TableSyncLogic {
 				postgresIndexName = postgresIndexName.substring(0, PG_KEY_LEN);
 			}
 			String cols = StringUtils.join(index.stream().map(TableIndex::getColumnName).collect(Collectors.toList()), "\",\"");
-			String uniq = index.get(0).isNonUnique() ? "" : "unique";
+			//String uniq = index.get(0).isNonUnique() ? "" : "unique";
+			String uniq = "";
 			String sql;
 			if (!index.get(0).isNonUnique() && "PRIMARY".equals(index.get(0).getKeyName())) {
 				sql = String.format("alter table \"%s\".\"%s\" add primary key (\"%s\");", database, table, cols);
@@ -201,7 +218,7 @@ public class TableSyncLogic {
 		Map<String, List<TableIndex>> ret = new HashMap<>();
 		for (List<TableIndex> index : map.values()) {
 			String columns = StringUtils.join(index.stream().map(TableIndex::getColumnName).collect(Collectors.toList()), ",");
-			columns = columns + "," + index.get(0).isNonUnique();
+			// columns = columns + "," + index.get(0).isNonUnique();
 			ret.put(columns, index);
 		}
 		return ret;

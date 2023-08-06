@@ -24,7 +24,7 @@ public class BinlogDelayGaugeSet implements MetricSet {
 	public Map<String, Metric> getMetrics() {
 		return ImmutableMap.of( //
 			"delay.second", (Gauge) () -> this.getDelaySecond(),//
-			"delay.hit", (Gauge) () -> this.getDelaySecond() > context.getConfig().metricsConsumerDelayAlert
+			"delay.hit", (Gauge) () -> this.getDelaySecond() > context.getConfig().metricsConsumerDelayAlert //
 		);
 	}
 

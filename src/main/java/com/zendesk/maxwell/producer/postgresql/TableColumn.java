@@ -66,8 +66,9 @@ public class TableColumn {
 
 	public boolean isSameType(TableColumn c) {
 		return Objects.equals(columnName, c.columnName)
-				&& (Objects.equals(dataType, c.dataType) || Objects.equals(this.typeGet(dataType), c.dataType))
-				&& (Objects.equals(strLen, c.strLen) || strLen == null || c.strLen == null);
+			&& (Objects.equals(dataType, c.dataType) || Objects.equals(this.typeGet(dataType), c.dataType))
+			&& (Objects.equals(strLen, c.strLen) || strLen == null || c.strLen == null)
+			&& (Objects.equals(numericPrecision, c.numericPrecision) && Objects.equals(numericScale, c.numericScale) || !"decimal".equals(dataType));
 	}
 
 	public boolean isSameNullAble(TableColumn c) {
@@ -77,9 +78,9 @@ public class TableColumn {
 
 	public boolean isSameDefault(TableColumn c) {
 		return isSameType(c) && (Objects.equals(columnDefault, c.columnDefault)
-				|| (c.columnDefault != null && c.columnDefault.startsWith("nextval(")) // auto_increment
-				|| Objects.equals(columnDefault, getPostgresDefaultStr(c.columnDefault)) // value same
-				|| Objects.equals(getDefaultStr(), getPostgresDefaultStr(c.columnDefault)) // value same
+			|| (c.columnDefault != null && c.columnDefault.startsWith("nextval(")) // auto_increment
+			|| Objects.equals(columnDefault, getPostgresDefaultStr(c.columnDefault)) // value same
+			|| Objects.equals(getDefaultStr(), getPostgresDefaultStr(c.columnDefault)) // value same
 		);
 	}
 

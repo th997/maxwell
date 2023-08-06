@@ -10,6 +10,7 @@ import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.monitoring.BinlogDelayGaugeSet;
 import com.zendesk.maxwell.producer.AbstractProducer;
 import com.zendesk.maxwell.replication.Position;
+import com.zendesk.maxwell.row.HeartbeatRowMap;
 import com.zendesk.maxwell.row.RowMap;
 import com.zendesk.maxwell.util.C3P0ConnectionPool;
 import com.zendesk.maxwell.util.StoppableTask;
@@ -55,6 +56,7 @@ import org.springframework.jdbc.support.JdbcUtils;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
+import org.springframework.util.CollectionUtils;
 
 import java.io.IOException;
 import java.sql.*;
@@ -87,6 +89,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	private Integer batchLimit;
 	private Integer batchTransactionLimit;
 	private Set<String> syncDbs;
+	private Set<String> logTables;
 	private Pattern[] syncTablePatterns;
 	private Map<String, Boolean> tableMatchCache = new HashMap<>();
 	private Map<String, ESTableConfig[]> syncTableConfig;
@@ -142,6 +145,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			syncDbs.clear();
 			syncDbs.addAll(this.getMysqlDbs());
 		}
+		logTables = new HashSet<>(Arrays.asList(StringUtils.split(esProperties.getProperty("logTables", ""), ",")));
 		syncTableConfig = om.readValue(esProperties.getProperty("syncTableConfig", "{}"), new TypeReference<HashMap<String, ESTableConfig[]>>() {
 		});
 		batchLimit = Integer.parseInt(esProperties.getProperty("batchLimit", "1000"));
@@ -158,7 +162,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		if (initSchemas) {
 			this.initTable();
 		}
-		context.getMetrics().register(MetricRegistry.name("binlog", "consumer"), new BinlogDelayGaugeSet(context));
+		context.getMetrics().register(MetricRegistry.name(context.getConfig().metricsPrefix), new BinlogDelayGaugeSet(context));
 	}
 
 
@@ -171,6 +175,10 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", context.getPosition());
 			System.exit(0);
 		}
+		if (reqList.isEmpty() && r instanceof HeartbeatRowMap) {
+			this.context.setPosition(r);
+			return;
+		}
 		Long now = System.currentTimeMillis();
 		if (now - lastUpdate > 1000) {
 			this.batchUpdate(reqList);
@@ -178,7 +186,9 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		if (!r.shouldOutput(outputConfig) || !isTableMatch(r.getDatabase(), r.getTable())) {
 			return;
 		}
-		LOG.info("push:{}", toJSON(r));
+		if (logTables.contains(r.getTable())) {
+			LOG.info("push:{}", toJSON(r));
+		}
 		switch (r.getRowType()) {
 			case "insert":
 			case "bootstrap-insert":
@@ -190,8 +200,8 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			case "table-alter":
 			case "ddl":
 				LOG.info("ddl:" + this.toJSON(r));
-				this.syncTable(r.getDatabase(), r.getTable());
 				this.batchUpdate(reqList);
+				this.syncTable(r.getDatabase(), r.getTable());
 				break;
 			case "bootstrap-start":
 			case "bootstrap-complete":
@@ -362,7 +372,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 					if (!reqList.isEmpty() && !reqList.getLast().getRowMap().getTable().equals(r.getTable())) {
 						this.batchUpdate(reqList);
 					}
-					List<DocWriteRequest> updateList = this.getUpdateList(config, null, Arrays.asList(r.getData()));
+					List<DocWriteRequest> updateList = this.getUpdateList(config, r);
 					for (DocWriteRequest req : updateList) {
 						reqList.add(new ESReq(r, req));
 					}
@@ -373,6 +383,21 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		}
 	}
 
+	private LinkedHashMap<String, Object> getOldKeyValues(RowMap r, List<String> keys) {
+		LinkedHashMap<String, Object> oldData = r.getOldData();
+		if (CollectionUtils.containsAny(oldData.keySet(), keys)) {
+			LinkedHashMap<String, Object> ret = new LinkedHashMap<>(keys.size());
+			for (String k : keys) {
+				Object v = oldData.get(k);
+				if (v == null) {
+					v = r.getData(k);
+				}
+				ret.put(k, v);
+			}
+			return ret;
+		}
+		return null;
+	}
 
 	private void simpleDml(RowMap r, String tableName) {
 		tableName = this.getTableName(tableName);
@@ -392,9 +417,19 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				break;
 			}
 			case "update": {
-				UpdateRequest req = new UpdateRequest(tableName, id.toString());
-				req.doc(r.getData());
-				reqList.add(new ESReq(r, req));
+				LinkedHashMap<String, Object> oldKeyValues = this.getOldKeyValues(r, r.getPrimaryKeyColumns());
+				if (oldKeyValues != null) {
+					String oldId = StringUtils.join(oldKeyValues.values(), "_");
+					reqList.add(new ESReq(r, new DeleteRequest(tableName, oldId)));
+					IndexRequest req = new IndexRequest(tableName);
+					req.id(id.toString());
+					req.source(r.getData());
+					reqList.add(new ESReq(r, req));
+				} else {
+					UpdateRequest req = new UpdateRequest(tableName, id.toString());
+					req.doc(r.getData());
+					reqList.add(new ESReq(r, req));
+				}
 				break;
 			}
 			case "delete": {
@@ -413,7 +448,22 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		}
 	}
 
-	private List<DocWriteRequest> getUpdateList(ESTableConfig config, List<TableField> priKeys, List<Map<String, Object>> batchList) throws Exception {
+	private List<DocWriteRequest> getUpdateList(ESTableConfig config, RowMap r) throws Exception {
+		if ("delete".equals(r.getRowType())) {
+			return this.getUpdateList(config, null, Arrays.asList(r.getData()), true);
+		}
+		LinkedHashMap<String, Object> oldKeyValues = this.getOldKeyValues(r, Arrays.asList(config.getSourceKeys()));
+		if (oldKeyValues != null) {
+			// delete old and add new
+			List<DocWriteRequest> updateList = this.getUpdateList(config, null, Arrays.asList(oldKeyValues), true);
+			updateList.addAll(this.getUpdateList(config, null, Arrays.asList(r.getData()), false));
+			return updateList;
+		} else {
+			return this.getUpdateList(config, null, Arrays.asList(r.getData()), false);
+		}
+	}
+
+	private List<DocWriteRequest> getUpdateList(ESTableConfig config, List<TableField> priKeys, List<Map<String, Object>> batchList, boolean del) throws Exception {
 		String tableName = getTableName(config.getTargetName());
 		if (config.getSourceFields() == null) {
 			return this.getUpdateListSimple(tableName, priKeys, batchList);
@@ -430,8 +480,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			}
 			String[] fields = config.getSourceFields();
 			Map<String, Object> data = new HashMap<>(fields.length);
-			boolean del = false;
-			if (config.getDelTagField() != null) {
+			if (!del && config.getDelTagField() != null) {
 				Object delFile = item.get(config.getDelTagField());
 				if (delFile != null && (delFile.toString().equals("1") || delFile.toString().equalsIgnoreCase("true"))) {
 					del = true;
@@ -493,6 +542,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		request.indices(tableName);
 		SearchSourceBuilder source = new SearchSourceBuilder();
 		source.query(query);
+		source.size(100000);
 		request.source(source);
 		return request;
 	}
@@ -755,7 +805,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				try {
 					BulkRequest bulkRequest = new BulkRequest();
 					for (ESTableConfig config : tableConfigs) {
-						List<DocWriteRequest> updateList = getUpdateList(config, priKeys, batchList);
+						List<DocWriteRequest> updateList = getUpdateList(config, priKeys, batchList, false);
 						updateList.forEach(bulkRequest::add);
 					}
 					doBulkRequest(bulkRequest, false);

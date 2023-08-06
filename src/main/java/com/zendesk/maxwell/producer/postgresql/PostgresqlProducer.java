@@ -6,6 +6,7 @@ import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.monitoring.BinlogDelayGaugeSet;
 import com.zendesk.maxwell.producer.AbstractProducer;
 import com.zendesk.maxwell.replication.Position;
+import com.zendesk.maxwell.row.HeartbeatRowMap;
 import com.zendesk.maxwell.row.RowMap;
 import com.zendesk.maxwell.util.C3P0ConnectionPool;
 import com.zendesk.maxwell.util.StoppableTask;
@@ -40,8 +41,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private volatile Long lastUpdate = System.currentTimeMillis();
 	private Set<String> syncDbs;
 	private Set<String> asyncCommitTables;
-	private boolean delay2AsyncCommit;
-
+	private Integer delay2AsyncCommitSecond;
 	private Integer batchLimit;
 	private Integer batchTransactionLimit;
 	private Integer maxPoolSize;
@@ -62,7 +62,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		resolvePkConflict = "true".equalsIgnoreCase(pgProperties.getProperty("resolvePkConflict", "true"));
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
 		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
-		delay2AsyncCommit = "true".equalsIgnoreCase(pgProperties.getProperty("delay2AsyncCommit", "true"));
+		delay2AsyncCommitSecond = Integer.parseInt(pgProperties.getProperty("delay2AsyncCommitSecond", "60"));
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
 		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
 		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "160000"));
@@ -99,15 +99,17 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 		if (initSchemas) {
 			this.initSchemas(syncDbs, initData);
-		} else if (syncIndexMinute > 0) {
+		}
+		if (syncIndexMinute > 0) {
 			this.startSyncIndexTask(syncIndexMinute);
 		}
-		context.getMetrics().register(MetricRegistry.name("binlog", "consumer"), new BinlogDelayGaugeSet(context));
+		context.getMetrics().register(MetricRegistry.name(context.getConfig().metricsPrefix), new BinlogDelayGaugeSet(context));
+
 	}
 
 	@Override
 	public void push(RowMap r) throws Exception {
-		if (initSchemas) {
+		if (initData) {
 			synchronized (this) {
 				if (initPosition != null) {
 					context.setPosition(initPosition);
@@ -120,6 +122,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	}
 
 	private synchronized void doPush(RowMap r) {
+		if (sqlList.isEmpty() && r instanceof HeartbeatRowMap) {
+			this.context.setPosition(r);
+			return;
+		}
 		Long now = System.currentTimeMillis();
 		if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
 			this.batchUpdate(sqlList);
@@ -289,8 +295,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		return false;
 	}
 
-	private Object convertValue(RowMap r, Map.Entry<String, Object> e) {
-		Object value = e.getValue();
+	private Object convertValue(Object value) {
 		if (value instanceof Collection) {
 			value = StringUtils.join((Collection) value, ",");
 		}
@@ -298,6 +303,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	}
 
 	private UpdateSql sqlInsert(RowMap r) {
+		List<String> keys = r.getPrimaryKeyColumns();
+		if (keys.isEmpty()) {
+			return null;
+		}
 		StringBuilder sql = new StringBuilder();
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlV = new StringBuilder();
@@ -306,14 +315,14 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		for (Map.Entry<String, Object> e : r.getData().entrySet()) {
 			sqlK.append(delimitPg(e.getKey())).append(",");
 			sqlV.append("?,");
-			args[i++] = this.convertValue(r, e);
+			args[i++] = this.convertValue(e.getValue());
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		sqlV.deleteCharAt(sqlV.length() - 1);
 		// insert into %s.%s(%s) values(%s) on conflict(%s) do nothing
 		sql.append("insert into ").append(delimitPg(r.getDatabase(), r.getTable())).append("(").append(sqlK).append(") values(").append(sqlV).append(")");
-		if (resolvePkConflict && !r.getPrimaryKeyColumns().isEmpty()) {
-			sql.append(" on conflict(").append(delimitPg(StringUtils.join(r.getPrimaryKeyColumns(), delimitPg(",")))).append(") do nothing");
+		if (resolvePkConflict) {
+			sql.append(" on conflict(").append(delimitPg(StringUtils.join(keys, delimitPg(",")))).append(") do nothing");
 		}
 		return new UpdateSql(sql.toString(), args, r);
 	}
@@ -327,11 +336,11 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		LinkedHashMap<String, Object> oldData = r.getOldData();
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlPri = new StringBuilder();
-		Object[] args = new Object[data.size() + keys.size()];
+		Object[] args = new Object[oldData.size() + keys.size()];
 		int i = 0;
-		for (Map.Entry<String, Object> e : data.entrySet()) {
-			sqlK.append(delimitPg(e.getKey())).append("=?,");
-			args[i++] = this.convertValue(r, e);
+		for (String updateKey : oldData.keySet()) {
+			sqlK.append(delimitPg(updateKey)).append("=?,");
+			args[i++] = this.convertValue(data.get(updateKey));
 		}
 		if (sqlK.length() == 0) {
 			return null;
@@ -371,7 +380,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	private boolean isDelay2Async() {
 		try {
-			return delay2AsyncCommit && (System.currentTimeMillis() - context.getPosition().getLastHeartbeatRead()) > context.getConfig().metricsConsumerDelayAlert * 1000L / 2;
+			return delay2AsyncCommitSecond > 0 && (System.currentTimeMillis() - context.getPosition().getLastHeartbeatRead()) > delay2AsyncCommitSecond * 1000L;
 		} catch (SQLException e) {
 			LOG.error("getPosition error", e);
 			return false;

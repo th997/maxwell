@@ -35,7 +35,7 @@ public abstract class SchemaChange {
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*(ALTER|CREATE)\\s+(DEFINER=[^\\s]+\\s+)?(EVENT|FUNCTION|TRIGGER|PROCEDURE)", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*DROP\\s+(EVENT|FUNCTION|TRIGGER|PROCEDURE|VIEW)", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 
-		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*(ALTER|CREATE|DROP)\\s+((ONLINE|OFFLINE|UNIQUE|FULLTEXT|SPATIAL)\\s+)*(INDEX)", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
+		//SQL_BLACKLIST.add(Pattern.compile("\\A\\s*(ALTER|CREATE|DROP)\\s+((ONLINE|OFFLINE|UNIQUE|FULLTEXT|SPATIAL)\\s+)*(INDEX)", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*ANALYZE\\s+TABLE", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*SET\\s+PASSWORD", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*(ALTER|CREATE|DROP|RENAME)\\s+USER", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
@@ -44,7 +44,7 @@ public abstract class SchemaChange {
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*(ALTER|CREATE|DROP)\\s+TEMPORARY\\s+TABLE", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*(ALTER|CREATE|DROP)\\s+TABLESPACE", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*(SET|DROP|CREATE)\\s+(DEFAULT\\s+)?ROLE", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
-		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*TRUNCATE\\s+", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
+		//SQL_BLACKLIST.add(Pattern.compile("\\A\\s*TRUNCATE\\s+", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*OPTIMIZE\\s+", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));
 
 		SQL_BLACKLIST.add(Pattern.compile("\\A\\s*REPAIR\\s+", Pattern.CASE_INSENSITIVE | Pattern.MULTILINE));

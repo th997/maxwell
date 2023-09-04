@@ -3,14 +3,14 @@ package com.zendesk.maxwell.producer.postgresql;
 import com.google.common.collect.MapDifference;
 import com.google.common.collect.Maps;
 import com.zendesk.maxwell.row.RowMap;
-import com.zendesk.maxwell.schema.ddl.DDLMap;
-import com.zendesk.maxwell.schema.ddl.ResolvedTableAlter;
+import com.zendesk.maxwell.schema.ddl.*;
 import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.util.CollectionUtils;
 
 import java.util.*;
 import java.util.concurrent.ExecutorService;
@@ -233,73 +233,52 @@ public class TableSyncLogic {
 		return mysqlJdbcTemplate.queryForList(SQL_MYSQL_DBS, String.class);
 	}
 
-	public boolean ddlRename(RowMap r) {
-		if (!(r instanceof DDLMap)) {
+	public boolean specialDDL(RowMap ddl) {
+		if (!(ddl instanceof DDLMap)) {
 			return false;
 		}
-		String sql = ((DDLMap) r).getSql();
-		if (sql == null) {
-			return false;
-		}
-		// /* xxx */ alter table xxx
-		if (sql.startsWith("/*")) {
-			int loc = sql.indexOf("*/");
-			if (loc > 0) {
-				sql = sql.substring(loc + 2).trim();
+		DDLMap r = (DDLMap) ddl;
+		// truncate
+		if (r.getChange() instanceof ResolvedTableTruncate) {
+			try {
+				this.executeDDL(String.format("truncate \"%s\".\"%s\"", r.getDatabase(), r.getTable()));
+			} catch (Throwable e) {
+				LOG.error("truncate error,sql={}", r.getSql(), e);
 			}
 		}
-		sql = sql.replaceAll("`", "");
-		String[] arr = sql.split("\\s+");
+		if (!(r.getChange() instanceof ResolvedTableAlter)) {
+			return false;
+		}
+		ResolvedTableAlter change = (ResolvedTableAlter) r.getChange();
 		// rename table xx to xx;
 		// alter table xx rename to xx;
-		if ((arr.length >= 5 && arr[0].equalsIgnoreCase("rename") // 1
-			&& arr[1].equalsIgnoreCase("table") // 1
-			&& arr[3].equalsIgnoreCase("to") // 1
-			&& !arr[2].equalsIgnoreCase(arr[4])) // 1
-			|| (arr.length >= 6 && arr[0].equalsIgnoreCase("alter") // 2
-			&& arr[1].equalsIgnoreCase("table") // 2
-			&& arr[3].equalsIgnoreCase("rename")// 2
-			&& arr[4].equalsIgnoreCase("to")// 2
-			&& !arr[2].equalsIgnoreCase(arr[5]))) {
+		if (change.oldTable != null && change.newTable != null && !change.oldTable.name.equals(change.newTable.name)) {
 			String alterSql = "alter table if exists \"%s\".\"%s\" rename to \"%s\"";
 			try {
-				if (((DDLMap) r).getChange() instanceof ResolvedTableAlter) {
-					ResolvedTableAlter change = (ResolvedTableAlter) ((DDLMap) r).getChange();
-					this.executeDDL(String.format(alterSql, change.oldTable.getDatabase(), change.oldTable.getName(), change.newTable.getName()));
-					return true;
-				}
+				this.executeDDL(String.format(alterSql, change.oldTable.getDatabase(), change.oldTable.getName(), change.newTable.getName()));
 			} catch (Throwable e) {
-				LOG.error("ddlRename error,sql={}", sql, e);
+				LOG.error("tableRename error,sql={}", r.getSql(), e);
 			}
-			return false;
+			return true;
 		}
-		String oldName = null;
-		String newName = null;
 		// alter table xxx rename column column_old to column_new
-		if (arr.length >= 8 && arr[0].equalsIgnoreCase("alter") //
-			&& arr[1].equalsIgnoreCase("table") //
-			&& arr[3].equalsIgnoreCase("rename") //
-			&& arr[4].equalsIgnoreCase("column") //
-			&& arr[6].equalsIgnoreCase("to") //
-			&& !arr[5].equalsIgnoreCase(arr[7])) {
-			oldName = arr[5];
-			newName = arr[7];
-		}
 		// alter table xxx change column_old column_new xxx
-		if (arr.length > 6 && arr[0].equalsIgnoreCase("alter") //
-			&& arr[1].equalsIgnoreCase("table") //
-			&& arr[3].equalsIgnoreCase("change") //
-			&& !arr[4].equalsIgnoreCase(arr[5])) {
-			oldName = arr[4];
-			newName = arr[5];
-		}
-		if (oldName != null) {
+		if (!CollectionUtils.isEmpty(change.columnMods)) {
 			String alterSql = "alter table \"%s\".\"%s\" rename column \"%s\" to \"%s\"";
-			try {
-				this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), oldName, newName));
+			boolean isChange = false;
+			for (ColumnMod mod : change.columnMods) {
+				if (mod instanceof RenameColumnMod) {
+					RenameColumnMod tmpMod = (RenameColumnMod) mod;
+					this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), tmpMod.oldName, tmpMod.newName));
+					isChange = true;
+				} else if (mod instanceof ChangeColumnMod) {
+					ChangeColumnMod tmpMod = (ChangeColumnMod) mod;
+					this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), tmpMod.name, tmpMod.definition.getName()));
+					isChange = true;
+				}
+			}
+			if (isChange) {
 				return true;
-			} catch (Throwable e) {
-				LOG.error("ddlRename error,sql={}", sql, e);
 			}
 		}
 		return false;

@@ -151,7 +151,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				this.batchUpdate(sqlList);
 				if (r.getTable() != null) {
 					LOG.info("ddl={}", this.toJSON(r));
-					if (!tableSyncLogic.ddlRename(r)) {
+					if (!tableSyncLogic.specialDDL(r)) {
 						tableSyncLogic.syncTable(r.getDatabase(), r.getTable());
 					}
 					this.context.setPosition(r);

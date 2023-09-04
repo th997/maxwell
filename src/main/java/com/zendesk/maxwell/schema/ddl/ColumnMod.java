@@ -4,7 +4,7 @@ import com.zendesk.maxwell.schema.Table;
 
 import java.util.List;
 
-abstract class ColumnMod {
+public abstract class ColumnMod {
 	public String name;
 
 	public ColumnMod(String name) {

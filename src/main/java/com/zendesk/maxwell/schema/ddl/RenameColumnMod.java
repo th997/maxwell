@@ -5,7 +5,7 @@ import com.zendesk.maxwell.schema.Table;
 import java.util.List;
 
 public class RenameColumnMod extends ColumnMod  {
-	private final String oldName, newName;
+	public final String oldName, newName;
 
 	public RenameColumnMod(String oldName, String newName) {
 		super(oldName);

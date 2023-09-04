@@ -5,7 +5,7 @@ import com.zendesk.maxwell.schema.columndef.ColumnDef;
 
 import java.util.List;
 
-class ChangeColumnMod extends ColumnMod {
+public class ChangeColumnMod extends ColumnMod {
 	public ColumnDef definition;
 	public ColumnPosition position;
 

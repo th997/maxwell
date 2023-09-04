@@ -6,6 +6,8 @@ import com.zendesk.maxwell.schema.Database;
 import com.zendesk.maxwell.schema.Schema;
 import com.zendesk.maxwell.schema.Table;
 
+import java.util.ArrayList;
+
 public class ResolvedTableAlter extends ResolvedSchemaChange {
 	public String database;
 	public String table;
@@ -16,6 +18,8 @@ public class ResolvedTableAlter extends ResolvedSchemaChange {
 	@JsonProperty("def")
 	public Table newTable;
 
+	public ArrayList<ColumnMod> columnMods;
+
 	public ResolvedTableAlter() { }
 	public ResolvedTableAlter(String database, String table, Table oldTable, Table newTable) {
 		this();
@@ -23,6 +27,11 @@ public class ResolvedTableAlter extends ResolvedSchemaChange {
 		this.table = table;
 		this.oldTable = oldTable;
 		this.newTable = newTable;
+	}
+
+	public ResolvedTableAlter(String database, String table, Table oldTable, Table newTable, ArrayList<ColumnMod> columnMods) {
+		this(database, table, oldTable, newTable);
+		this.columnMods = columnMods;
 	}
 
 	@Override

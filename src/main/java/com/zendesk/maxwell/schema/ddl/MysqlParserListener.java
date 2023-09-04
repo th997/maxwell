@@ -280,6 +280,21 @@ public class MysqlParserListener extends mysqlBaseListener {
 	}
 
 	@Override
+	public void exitTruncate_table(mysqlParser.Truncate_tableContext ctx) {
+		schemaChanges.add(new TableTruncate(getDB(ctx.table_name()), getTable(ctx.table_name())));
+	}
+
+	@Override
+	public void exitIndex_create(mysqlParser.Index_createContext ctx) {
+		schemaChanges.add(new TableAlter(getDB(ctx.table_name()), getTable(ctx.table_name())));
+	}
+
+	@Override
+	public void exitIndex_drop(mysqlParser.Index_dropContext ctx) {
+		schemaChanges.add(new TableAlter(getDB(ctx.table_name()), getTable(ctx.table_name())));
+	}
+
+	@Override
 	public void exitDrop_database(mysqlParser.Drop_databaseContext ctx) {
 		boolean ifExists = ctx.if_exists() != null;
 		String dbName = unquote(ctx.name().getText());

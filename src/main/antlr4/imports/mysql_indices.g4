@@ -5,6 +5,12 @@ import mysql_literal_tokens, mysql_idents;
 if_not_exists:
   IF NOT EXISTS;
 
+index_create:
+  CREATE (ONLINE|OFFLINE|UNIQUE|FULLTEXT|SPATIAL)? INDEX index_name index_type? ON table_name index_column_list index_options* algorithm_option? lock_option?;
+
+index_drop:
+  DROP INDEX index_name ON table_name algorithm_option? lock_option?;
+
 index_definition:
   (index_type_1 | index_type_pk | index_type_3 | index_type_4 | index_type_5 | index_type_check);
 
@@ -40,6 +46,12 @@ index_options:
   | COMMENT string_literal
   | ( VISIBLE | INVISIBLE )
   ;
+
+algorithm_option:
+  ALGORITHM '='? (DEFAULT | INPLACE | COPY);
+
+lock_option:
+  LOCK '='? (DEFAULT | NONE | SHARED | EXCLUSIVE);
 
 index_column_list: '(' index_columns ')';
 index_columns: index_column (',' index_column )*;

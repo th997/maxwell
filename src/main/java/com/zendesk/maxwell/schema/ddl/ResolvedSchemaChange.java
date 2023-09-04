@@ -10,6 +10,7 @@ import com.zendesk.maxwell.schema.Schema;
 		@JsonSubTypes.Type(value = ResolvedTableAlter.class, name = "table-alter"),
 		@JsonSubTypes.Type(value = ResolvedTableCreate.class, name = "table-create"),
 		@JsonSubTypes.Type(value = ResolvedTableDrop.class, name = "table-drop"),
+		@JsonSubTypes.Type(value = ResolvedTableTruncate.class, name = "table-truncate"),
 		@JsonSubTypes.Type(value = ResolvedDatabaseAlter.class, name = "database-alter"),
 		@JsonSubTypes.Type(value = ResolvedDatabaseCreate.class, name = "database-create"),
 		@JsonSubTypes.Type(value = ResolvedDatabaseDrop.class, name = "database-drop"),

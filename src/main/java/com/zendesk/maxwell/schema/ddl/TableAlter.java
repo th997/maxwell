@@ -74,7 +74,7 @@ public class TableAlter extends SchemaChange {
 
 		table.setDefaultColumnCharsets();
 
-		return new ResolvedTableAlter(this.database, this.table, oldTable, table);
+		return new ResolvedTableAlter(this.database, this.table, oldTable, table, columnMods);
 	}
 
 	@Override

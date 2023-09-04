@@ -245,6 +245,7 @@ public class TableSyncLogic {
 			} catch (Throwable e) {
 				LOG.error("truncate error,sql={}", r.getSql(), e);
 			}
+			return true;
 		}
 		if (!(r.getChange() instanceof ResolvedTableAlter)) {
 			return false;
@@ -273,8 +274,10 @@ public class TableSyncLogic {
 					isChange = true;
 				} else if (mod instanceof ChangeColumnMod) {
 					ChangeColumnMod tmpMod = (ChangeColumnMod) mod;
-					this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), tmpMod.name, tmpMod.definition.getName()));
-					isChange = true;
+					if (!tmpMod.name.equals(tmpMod.definition.getName())) {
+						this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), tmpMod.name, tmpMod.definition.getName()));
+						isChange = true;
+					}
 				}
 			}
 			if (isChange) {

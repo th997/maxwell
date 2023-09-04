@@ -36,15 +36,12 @@ public class TableColumn {
 		typeMap.put("time", "time");
 		typeMap.put("year", "int2");
 
-		// blob/binary will be base64 encoded and does not support synchronization for now.
-		// https://maxwells-daemon.io/dataformat/#blob-binary-encoded-strings
 		typeMap.put("blob", "bytea");
 		typeMap.put("tinyblob", "bytea");
 		typeMap.put("mediumblob", "bytea");
 		typeMap.put("longblob", "bytea");
 		typeMap.put("binary", "bytea");
 		typeMap.put("varbinary", "bytea");
-
 	}
 
 	private String columnName;

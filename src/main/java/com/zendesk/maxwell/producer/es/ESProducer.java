@@ -800,7 +800,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			this.tableConfigs = tableConfigs;
 		}
 
-		private void asyncBatchInsert(final List<Map<String, Object>> batchList) {
+		public void asyncBatchInsert(final List<Map<String, Object>> batchList) {
 			executor.execute(() -> {
 				try {
 					BulkRequest bulkRequest = new BulkRequest();

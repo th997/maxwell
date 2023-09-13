@@ -266,21 +266,20 @@ public class TableSyncLogic {
 		// alter table xxx change column_old column_new xxx
 		if (!CollectionUtils.isEmpty(change.columnMods)) {
 			String alterSql = "alter table \"%s\".\"%s\" rename column \"%s\" to \"%s\"";
-			boolean isChange = false;
+			boolean onlyRename = false;
 			for (ColumnMod mod : change.columnMods) {
 				if (mod instanceof RenameColumnMod) {
 					RenameColumnMod tmpMod = (RenameColumnMod) mod;
 					this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), tmpMod.oldName, tmpMod.newName));
-					isChange = true;
+					onlyRename = true;
 				} else if (mod instanceof ChangeColumnMod) {
 					ChangeColumnMod tmpMod = (ChangeColumnMod) mod;
 					if (!tmpMod.name.equals(tmpMod.definition.getName())) {
 						this.executeDDL(String.format(alterSql, r.getDatabase(), r.getTable(), tmpMod.name, tmpMod.definition.getName()));
-						isChange = true;
 					}
 				}
 			}
-			if (isChange) {
+			if (onlyRename) {
 				return true;
 			}
 		}

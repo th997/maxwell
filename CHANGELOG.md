@@ -1,5 +1,31 @@
 # Maxwell changelog
 
+### [v1.40.5](https://github.com/zendesk/maxwell/releases/tag/v1.40.5)
+
+- Fix a bug introduced in v1.40.2 in the kafka producer.
+
+
+
+_Released 2023-09-09_
+
+### [v1.40.4](https://github.com/zendesk/maxwell/releases/tag/v1.40.4)
+
+- add support for mariadb's DROP COLUMN IF EXISTS
+
+
+
+_Released 2023-09-01_
+
+### [v1.40.3](https://github.com/zendesk/maxwell/releases/tag/v1.40.3)
+
+- bugfix for "rename tables"
+- bugfix for temporary tables that rollback inside transactions
+- sns+localstack support
+
+
+
+_Released 2023-08-27_
+
 ### [v1.40.2](https://github.com/zendesk/maxwell/releases/tag/v1.40.2)
 
 - fix dumb bug in last release

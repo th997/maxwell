@@ -30,18 +30,20 @@ public abstract class AbstractAsyncProducer extends AbstractProducer {
 
 		public void markCompleted() {
 			inflightMessages.freeSlot(messageID);
-			InflightMessageList.InflightMessage message = inflightMessages.completeMessage(position);
+			if(isTXCommit) {
+				InflightMessageList.InflightMessage message = inflightMessages.completeMessage(position);
 
-			if (message != null && this.isTXCommit) {
-				context.setPosition(message.position);
-				long currentTime = System.currentTimeMillis();
-				long endToEndLatency = currentTime - message.eventTimeMS;
+				if (message != null) {
+					context.setPosition(message.position);
+					long currentTime = System.currentTimeMillis();
+					long endToEndLatency = currentTime - message.eventTimeMS;
 
-				messagePublishTimer.update(currentTime - message.sendTimeMS, TimeUnit.MILLISECONDS);
-				messageLatencyTimer.update(Math.max(0L, endToEndLatency - 500L), TimeUnit.MILLISECONDS);
+					messagePublishTimer.update(currentTime - message.sendTimeMS, TimeUnit.MILLISECONDS);
+					messageLatencyTimer.update(Math.max(0L, endToEndLatency - 500L), TimeUnit.MILLISECONDS);
 
-				if (endToEndLatency > metricsAgeSloMs) {
-					messageLatencySloViolationCount.inc();
+					if (endToEndLatency > metricsAgeSloMs) {
+						messageLatencySloViolationCount.inc();
+					}
 				}
 			}
 		}
@@ -64,8 +66,7 @@ public abstract class AbstractAsyncProducer extends AbstractProducer {
 	@Override
 	public final void push(RowMap r) throws Exception {
 		Position position = r.getNextPosition();
-		// Rows that do not get sent to a target will be automatically marked as complete.
-		// We will attempt to commit a checkpoint up to the current row.
+		// Rows that do not get sent to the prodcuer will be automatically marked as complete.
 		if(!r.shouldOutput(outputConfig)) {
 			if ( position != null ) {
 				inflightMessages.addMessage(position, r.getTimestampMillis(), 0L);
@@ -82,7 +83,9 @@ public abstract class AbstractAsyncProducer extends AbstractProducer {
 
 		long messageID = inflightMessages.waitForSlot();
 
-		inflightMessages.addMessage(position, r.getTimestampMillis(), messageID);
+		if(r.isTXCommit()) {
+			inflightMessages.addMessage(position, r.getTimestampMillis(), messageID);
+		}
 
 		CallbackCompleter cc = new CallbackCompleter(inflightMessages, position, r.isTXCommit(), context, messageID);
 

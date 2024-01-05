@@ -44,6 +44,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private Integer delay2AsyncCommitSecond;
 	private Integer batchLimit;
 	private Integer batchTransactionLimit;
+	private Integer sqlMergeSize;
 	private Integer maxPoolSize;
 	private Integer syncIndexMinute;
 	private boolean initSchemas;
@@ -66,6 +67,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
 		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
 		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "160000"));
+		sqlMergeSize = Integer.parseInt(pgProperties.getProperty("sqlMergeSize", "5"));
 		maxPoolSize = Integer.parseInt(pgProperties.getProperty("maxPoolSize", "10"));
 		syncIndexMinute = Integer.parseInt(pgProperties.getProperty("syncIndexMinute", "600"));
 		// init data
@@ -197,23 +199,23 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				postgresJdbcTemplate.execute("set local synchronous_commit = off");
 			}
 			for (UpdateSqlGroup group : groupList) {
-				this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+				this.batchUpdateGroup(group);
 			}
 			pgTransactionManager.commit(status);
 			this.context.setPosition(rowMap);
-			LOG.info("batchUpdate size={},mergeSize={},time={},sql={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate, updateSql.getSql());
+			LOG.info("batchUpdate size={},mergeSize={},time={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate);
 			sqlList.clear();
 		} catch (Exception e) {
-			LOG.info("batchUpdate fail size={},mergeSize={},time={},sql={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate, updateSql.getSql());
+			LOG.info("batchUpdate fail size={},mergeSize={},time={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate);
 			pgTransactionManager.rollback(status);
 			if (this.isMsgException(e, "does not exist")) {
 				for (UpdateSqlGroup group : groupList) {
 					try {
-						this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+						this.batchUpdateGroup(group);
 					} catch (Exception e1) {
 						if (this.isMsgException(e1, "does not exist")) {
 							if (tableSyncLogic.syncTable(group.getLastRowMap().getDatabase(), group.getLastRowMap().getTable())) {
-								this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+								this.batchUpdateGroup(group);
 							}
 						} else {
 							throw e1;
@@ -243,6 +245,18 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 	}
 
+	private void batchUpdateGroup(UpdateSqlGroup group) {
+		long start = System.currentTimeMillis();
+		String sql = group.getSqlWithArgsList().size() == group.getArgsList().size() ? group.getSql() : (group.getSql() + "...");
+		if (group.getSqlWithArgsList().size() > group.getArgsList().size()) {
+			postgresJdbcTemplate.batchUpdate(group.getSqlWithArgsList().toArray(new String[group.getSqlWithArgsList().size()]));
+			LOG.info("batchUpdateGroup1 size={},time={},sql={}", group.getSqlWithArgsList().size(), System.currentTimeMillis() - start, sql);
+		} else {
+			this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+			LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getArgsList().size(), System.currentTimeMillis() - start, sql);
+		}
+	}
+
 	/**
 	 * Consecutive and identical sql's are divided into the same group
 	 *
@@ -263,6 +277,12 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			}
 			group.setLastRowMap(sql.getRowMap());
 			group.getArgsList().add(sql.getArgs());
+			if (sql.getSqlWithArgs() != null) {
+				group.getSqlWithArgsList().add(sql.getSqlWithArgs());
+			}
+			if (group.getArgsList().size() != group.getSqlWithArgsList().size()) {
+				group.getSqlWithArgsList().clear();
+			}
 		}
 		for (UpdateSqlGroup group : ret) {
 			RowMap r = group.getLastRowMap();
@@ -275,6 +295,19 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				argsList.add(ids);
 				group.setSql(sql);
 				group.setArgsList(argsList);
+			}
+		}
+		if (ret.size() > 1) {
+			Iterator<UpdateSqlGroup> iterator = ret.iterator();
+			UpdateSqlGroup last = null;
+			while (iterator.hasNext()) {
+				UpdateSqlGroup next = iterator.next();
+				if (last != null && !last.getSqlWithArgsList().isEmpty() && !next.getSqlWithArgsList().isEmpty() && next.getArgsList().size() < sqlMergeSize) {
+					last.getSqlWithArgsList().addAll(next.getSqlWithArgsList());
+					iterator.remove();
+				} else {
+					last = next;
+				}
 			}
 		}
 		return ret;
@@ -336,28 +369,51 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		LinkedHashMap<String, Object> oldData = r.getOldData();
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlPri = new StringBuilder();
+		StringBuilder sqlWithArgs = new StringBuilder();
 		Object[] args = new Object[oldData.size() + keys.size()];
 		int i = 0;
 		for (String updateKey : oldData.keySet()) {
-			sqlK.append(delimitPg(updateKey)).append("=?,");
-			args[i++] = this.convertValue(data.get(updateKey));
+			String key = this.delimitPg(updateKey);
+			Object value = this.convertValue(data.get(updateKey));
+			sqlK.append(key).append("=?,");
+			args[i++] = value;
+			if (value instanceof Number && sqlWithArgs != null) {
+				sqlWithArgs.append(key).append('=').append(value).append(',');
+			} else {
+				sqlWithArgs = null;
+			}
 		}
 		if (sqlK.length() == 0) {
 			return null;
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
+		if (sqlWithArgs != null) {
+			sqlWithArgs.deleteCharAt(sqlWithArgs.length() - 1);
+			sqlWithArgs.append(" where ");
+		}
 		for (String pri : keys) {
-			sqlPri.append(delimitPg(pri)).append("=? and ");
-			Object priValue = oldData.get(pri);
-			if (priValue == null) {
-				priValue = data.get(pri);
+			String key = this.delimitPg(pri);
+			Object value = oldData.get(pri);
+			if (value == null) {
+				value = data.get(pri);
 			}
-			args[i++] = priValue;
+			sqlPri.append(key).append("=? and ");
+			args[i++] = value;
+			if (sqlWithArgs != null && value instanceof Number) {
+				sqlWithArgs.append(key).append('=').append(value).append("and ");
+			} else {
+				sqlWithArgs = null;
+			}
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		// update "%s"."%s" set %s where %s
-		String sql = new StringBuilder().append("update ").append(delimitPg(r.getDatabase(), r.getTable())).append(" set ").append(sqlK).append(" where ").append(sqlPri).toString();
-		return new UpdateSql(sql, args, r);
+		String table = this.delimitPg(r.getDatabase(), r.getTable());
+		String sql = new StringBuilder().append("update ").append(table).append(" set ").append(sqlK).append(" where ").append(sqlPri).toString();
+		if (sqlWithArgs != null) {
+			sqlWithArgs.delete(sqlWithArgs.length() - 4, sqlWithArgs.length());
+			sqlWithArgs.insert(0, "update " + table + " set ");
+		}
+		return new UpdateSql(sql, args, r, sqlWithArgs == null ? null : sqlWithArgs.toString());
 	}
 
 	private UpdateSql sqlDelete(RowMap r) {

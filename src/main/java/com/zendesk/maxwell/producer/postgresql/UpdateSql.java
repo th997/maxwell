@@ -6,11 +6,19 @@ public class UpdateSql {
 	private String sql;
 	private Object[] args;
 	private RowMap rowMap;
+	private String sqlWithArgs;
 
 	public UpdateSql(String sql, Object[] args, RowMap rowMap) {
 		this.sql = sql;
 		this.args = args;
 		this.rowMap = rowMap;
+	}
+
+	public UpdateSql(String sql, Object[] args, RowMap rowMap, String sqlWithArgs) {
+		this.sql = sql;
+		this.args = args;
+		this.rowMap = rowMap;
+		this.sqlWithArgs = sqlWithArgs;
 	}
 
 	public String getSql() {
@@ -35,5 +43,13 @@ public class UpdateSql {
 
 	public void setRowMap(RowMap rowMap) {
 		this.rowMap = rowMap;
+	}
+
+	public String getSqlWithArgs() {
+		return sqlWithArgs;
+	}
+
+	public void setSqlWithArgs(String sqlWithArgs) {
+		this.sqlWithArgs = sqlWithArgs;
 	}
 }

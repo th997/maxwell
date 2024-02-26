@@ -1,4 +1,4 @@
-package com.zendesk.maxwell.producer.postgresql;
+package com.zendesk.maxwell.producer.jdbc;
 
 public class TableIndex {
 	private String keyName;

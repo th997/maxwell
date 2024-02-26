@@ -8,7 +8,7 @@ import com.zendesk.maxwell.filtering.Filter;
 import com.zendesk.maxwell.monitoring.*;
 import com.zendesk.maxwell.producer.*;
 import com.zendesk.maxwell.producer.es.ESProducer;
-import com.zendesk.maxwell.producer.postgresql.PostgresqlProducer;
+import com.zendesk.maxwell.producer.jdbc.JdbcProducer;
 import com.zendesk.maxwell.recovery.RecoveryInfo;
 import com.zendesk.maxwell.replication.*;
 import com.zendesk.maxwell.row.RowMap;
@@ -560,8 +560,8 @@ public class MaxwellContext {
 			case "none":
 				this.producer = new NoneProducer(this);
 				break;
-			case "postgresql":
-				this.producer = new PostgresqlProducer(this);
+			case "jdbc":
+				this.producer = new JdbcProducer(this);
 				break;
 			case "elasticsearch":
 				this.producer = new ESProducer(this);

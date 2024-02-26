@@ -125,9 +125,9 @@ public class MaxwellConfig extends AbstractConfig {
 	public final Properties kafkaProperties;
 
 	/**
-	 * Properties object containing all configuration options beginning with "postgresql."
+	 * Properties object containing all configuration options beginning with "jdbc."
 	 */
-	public final Properties pgProperties;
+	public final Properties jdbcProperties;
 
 	/**
 	 * Properties object containing all configuration options beginning with "elasticsearch."
@@ -657,7 +657,7 @@ public class MaxwellConfig extends AbstractConfig {
 	public MaxwellConfig() { // argv is only null in tests
 		this.customProducerProperties = new Properties();
 		this.kafkaProperties = new Properties();
-		this.pgProperties = new Properties();
+		this.jdbcProperties = new Properties();
 		this.esProperties = new Properties();
 		this.replayMode = false;
 		this.replicationMysql = new MaxwellMysqlConfig();
@@ -1157,8 +1157,8 @@ public class MaxwellConfig extends AbstractConfig {
 						continue; // don't override command line bootstrap servers with config files'
 
 					this.kafkaProperties.setProperty(k.replace("kafka.", ""), properties.getProperty(k));
-				} else if (k.startsWith("postgresql.")) {
-					this.pgProperties.setProperty(k.replace("postgresql.", ""), properties.getProperty(k));
+				} else if (k.startsWith("jdbc.")) {
+					this.jdbcProperties.setProperty(k.replace("jdbc.", ""), properties.getProperty(k));
 				} else if (k.startsWith("elasticsearch.")) {
 					this.esProperties.setProperty(k.replace("elasticsearch.", ""), properties.getProperty(k));
 				}

@@ -1,6 +1,6 @@
-package com.zendesk.maxwell.producer.es;
+package com.zendesk.maxwell.producer.jdbc;
 
-public class TableField {
+public class TableColumn {
 	private String columnName;
 	private String columnType;
 	private String dataType;
@@ -21,14 +21,6 @@ public class TableField {
 		this.columnName = columnName;
 	}
 
-	public String getColumnType() {
-		return columnType;
-	}
-
-	public void setColumnType(String columnType) {
-		this.columnType = columnType;
-	}
-
 	public String getDataType() {
 		return dataType;
 	}
@@ -43,22 +35,6 @@ public class TableField {
 
 	public void setStrLen(Long strLen) {
 		this.strLen = strLen;
-	}
-
-	public Integer getNumericPrecision() {
-		return numericPrecision;
-	}
-
-	public void setNumericPrecision(Integer numericPrecision) {
-		this.numericPrecision = numericPrecision;
-	}
-
-	public Integer getNumericScale() {
-		return numericScale;
-	}
-
-	public void setNumericScale(Integer numericScale) {
-		this.numericScale = numericScale;
 	}
 
 	public String getColumnDefault() {
@@ -77,14 +53,6 @@ public class TableField {
 		this.nullAble = nullAble;
 	}
 
-	public boolean isPri() {
-		return pri;
-	}
-
-	public void setPri(boolean pri) {
-		this.pri = pri;
-	}
-
 	public boolean isAutoIncrement() {
 		return autoIncrement;
 	}
@@ -93,11 +61,43 @@ public class TableField {
 		this.autoIncrement = autoIncrement;
 	}
 
+	public boolean isPri() {
+		return pri;
+	}
+
+	public void setPri(boolean pri) {
+		this.pri = pri;
+	}
+
+	public Integer getNumericPrecision() {
+		return numericPrecision;
+	}
+
+	public void setNumericPrecision(Integer numericPrecision) {
+		this.numericPrecision = numericPrecision;
+	}
+
 	public String getColumnComment() {
 		return columnComment;
 	}
 
 	public void setColumnComment(String columnComment) {
 		this.columnComment = columnComment;
+	}
+
+	public Integer getNumericScale() {
+		return numericScale;
+	}
+
+	public void setNumericScale(Integer numericScale) {
+		this.numericScale = numericScale;
+	}
+
+	public String getColumnType() {
+		return columnType;
+	}
+
+	public void setColumnType(String columnType) {
+		this.columnType = columnType;
 	}
 }

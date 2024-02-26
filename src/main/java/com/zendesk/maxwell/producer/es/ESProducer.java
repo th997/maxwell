@@ -9,6 +9,7 @@ import com.google.common.collect.ImmutableMap;
 import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.monitoring.BinlogDelayGaugeSet;
 import com.zendesk.maxwell.producer.AbstractProducer;
+import com.zendesk.maxwell.producer.jdbc.TableColumn;
 import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.row.HeartbeatRowMap;
 import com.zendesk.maxwell.row.RowMap;
@@ -237,10 +238,10 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		return isMatch;
 	}
 
-	private List<TableField> syncTable(String database, String table) throws IOException {
+	private List<TableColumn> syncTable(String database, String table) throws IOException {
 		String fullName = database + "." + table;
 		ESTableConfig[] tableConfigs = syncTableConfig.get(fullName);
-		Map<String, TableField> fieldMap = this.getMysqlFields(database, table);
+		Map<String, TableColumn> fieldMap = this.getMysqlFields(database, table);
 		if (tableConfigs != null) {
 			for (ESTableConfig config : tableConfigs) {
 				this.syncTable(fieldMap, config);
@@ -250,29 +251,29 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 			config.setTargetName(table);
 			this.syncTable(fieldMap, config);
 		}
-		List<TableField> priFields = new ArrayList<>(2);
-		for (TableField tableField : fieldMap.values()) {
-			if (tableField.isPri()) {
-				priFields.add(tableField);
+		List<TableColumn> priFields = new ArrayList<>(2);
+		for (TableColumn TableColumn : fieldMap.values()) {
+			if (TableColumn.isPri()) {
+				priFields.add(TableColumn);
 			}
 		}
 		return priFields;
 	}
 
-	private void syncTable(Map<String, TableField> fieldMap, ESTableConfig config) throws IOException {
+	private void syncTable(Map<String, TableColumn> fieldMap, ESTableConfig config) throws IOException {
 		config.setTargetName(this.getTableName(config.getTargetName()));
 		// get properties
 		Map<String, Object> properties = new HashMap<>();
 		if (config.getSourceFields() == null) {
-			for (TableField tableFiled : fieldMap.values()) {
-				Map<String, String> type = this.getTypeProp(config, tableFiled);
-				Optional.ofNullable(type).ifPresent(o -> properties.put(tableFiled.getColumnName(), o));
+			for (TableColumn column : fieldMap.values()) {
+				Map<String, String> type = this.getTypeProp(config, column);
+				Optional.ofNullable(type).ifPresent(o -> properties.put(column.getColumnName(), o));
 			}
 		} else {
 			String[] fields = config.getSourceFields();
 			for (int i = 0; i < fields.length; i++) {
-				TableField tableFiled = fieldMap.get(fields[i]);
-				Map<String, String> type = this.getTypeProp(config, tableFiled);
+				TableColumn column = fieldMap.get(fields[i]);
+				Map<String, String> type = this.getTypeProp(config, column);
 				int finalI = i;
 				Optional.ofNullable(type).ifPresent(o -> properties.put(config.getTargetFields()[finalI], o));
 			}
@@ -308,20 +309,20 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		}
 	}
 
-	private Map<String, String> getTypeProp(ESTableConfig config, TableField tableField) {
+	private Map<String, String> getTypeProp(ESTableConfig config, TableColumn TableColumn) {
 		if (config.getTypeMap() != null) {
-			String type = config.getTypeMap().get(tableField.getColumnName());
+			String type = config.getTypeMap().get(TableColumn.getColumnName());
 			if (type != null) {
 				return ImmutableMap.of("type", type);
 			}
 		}
-		switch (tableField.getDataType()) {
+		switch (TableColumn.getDataType()) {
 			// string
 			case "char":
 			case "varchar":
 			case "enum":
 			case "set":
-				return ImmutableMap.of("type", tableField.getStrLen() <= 256 ? "keyword" : "text");
+				return ImmutableMap.of("type", TableColumn.getStrLen() <= 256 ? "keyword" : "text");
 			case "text":
 			case "tinytext":
 			case "mediumtext":
@@ -340,9 +341,9 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 				return ImmutableMap.of("type", "long");
 			case "double":
 			case "float":
-				return ImmutableMap.of("type", tableField.getDataType());
+				return ImmutableMap.of("type", TableColumn.getDataType());
 			case "decimal":
-				return ImmutableMap.of("type", "scaled_float", "scaling_factor", tableField.getNumericScale() == null ? "1" : String.valueOf(Math.pow(10, tableField.getNumericScale())));
+				return ImmutableMap.of("type", "scaled_float", "scaling_factor", TableColumn.getNumericScale() == null ? "1" : String.valueOf(Math.pow(10, TableColumn.getNumericScale())));
 			// date
 			case "datetime":
 			case "timestamp":
@@ -463,7 +464,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		}
 	}
 
-	private List<DocWriteRequest> getUpdateList(ESTableConfig config, List<TableField> priKeys, List<Map<String, Object>> batchList, boolean del) throws Exception {
+	private List<DocWriteRequest> getUpdateList(ESTableConfig config, List<TableColumn> priKeys, List<Map<String, Object>> batchList, boolean del) throws Exception {
 		String tableName = getTableName(config.getTargetName());
 		if (config.getSourceFields() == null) {
 			return this.getUpdateListSimple(tableName, priKeys, batchList);
@@ -512,13 +513,13 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		return ret;
 	}
 
-	private List<DocWriteRequest> getUpdateListSimple(String tableName, List<TableField> priKeys, List<Map<String, Object>> batchList) {
+	private List<DocWriteRequest> getUpdateListSimple(String tableName, List<TableColumn> priKeys, List<Map<String, Object>> batchList) {
 		List<DocWriteRequest> ret = new ArrayList<>();
 		for (Map<String, Object> item : batchList) {
 			IndexRequest req = new IndexRequest(tableName);
 			if (priKeys != null && priKeys.size() > 0) {
 				StringBuilder id = new StringBuilder();
-				for (TableField priKey : priKeys) {
+				for (TableColumn priKey : priKeys) {
 					if (id.length() == 0) {
 						id.append(item.get(priKey.getColumnName()));
 					} else {
@@ -617,9 +618,9 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		return mysqlJdbcTemplate.queryForList(SQL_MYSQL_TABLE, String.class, tableSchema);
 	}
 
-	public Map<String, TableField> getMysqlFields(String tableSchema, String tableName) {
-		List<TableField> list = mysqlJdbcTemplate.query(SQL_MYSQL_FIELD, BeanPropertyRowMapper.newInstance(TableField.class), tableSchema, tableName);
-		Map<String, TableField> map = list.stream().collect(Collectors.toMap(TableField::getColumnName, Function.identity()));
+	public Map<String, TableColumn> getMysqlFields(String tableSchema, String tableName) {
+		List<TableColumn> list = mysqlJdbcTemplate.query(SQL_MYSQL_FIELD, BeanPropertyRowMapper.newInstance(TableColumn.class), tableSchema, tableName);
+		Map<String, TableColumn> map = list.stream().collect(Collectors.toMap(TableColumn::getColumnName, Function.identity()));
 		return map;
 	}
 
@@ -708,7 +709,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 					if (!isTableMatch(database, table)) {
 						continue;
 					}
-					List<TableField> priKeys = this.syncTable(database, table);
+					List<TableColumn> priKeys = this.syncTable(database, table);
 					ESTableConfig[] tableConfigs = syncTableConfig.get(database + "." + table);
 					if (!priKeys.isEmpty() && tableConfigs == null) {
 						ESTableConfig tableConfig = new ESTableConfig();
@@ -727,7 +728,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 						continue;
 					}
 					ESTableConfig[] tableConfigs = syncTableConfig.get(database + "." + table);
-					List<TableField> priKeys = this.syncTable(database, table);
+					List<TableColumn> priKeys = this.syncTable(database, table);
 					if (!priKeys.isEmpty() && tableConfigs != null) {
 						waitFinish(executor);
 						for (ESTableConfig config : tableConfigs) {
@@ -769,7 +770,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		}
 	}
 
-	private Integer initTableData(String database, String table, ThreadPoolExecutor executor, List<TableField> priKeys, ESTableConfig[] tableConfigs) {
+	private Integer initTableData(String database, String table, ThreadPoolExecutor executor, List<TableColumn> priKeys, ESTableConfig[] tableConfigs) {
 		// query all by mysql cursor
 		String querySql = String.format("select * from `%s`.`%s`", database, table);
 		Integer count = mysqlJdbcTemplate.query(con -> {
@@ -783,7 +784,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 	public class MyResultSetExtractor implements ResultSetExtractor<Integer> {
 		final String database;
 		final String table;
-		final List<TableField> priKeys;
+		final List<TableColumn> priKeys;
 		final ESTableConfig[] tableConfigs;
 		final ThreadPoolExecutor executor;
 		// if has data
@@ -792,7 +793,7 @@ public class ESProducer extends AbstractProducer implements StoppableTask {
 		String[] columnNames = null;
 		long start = System.currentTimeMillis();
 
-		public MyResultSetExtractor(String database, String table, ThreadPoolExecutor executor, List<TableField> priKeys, ESTableConfig[] tableConfigs) {
+		public MyResultSetExtractor(String database, String table, ThreadPoolExecutor executor, List<TableColumn> priKeys, ESTableConfig[] tableConfigs) {
 			this.database = database;
 			this.table = table;
 			this.executor = executor;

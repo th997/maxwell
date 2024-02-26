@@ -1,4 +1,4 @@
-package com.zendesk.maxwell.producer.postgresql;
+package com.zendesk.maxwell.producer.jdbc;
 
 import com.zendesk.maxwell.row.RowMap;
 

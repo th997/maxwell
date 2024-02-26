@@ -1,4 +1,4 @@
-package com.zendesk.maxwell.producer.postgresql;
+package com.zendesk.maxwell.producer.jdbc;
 
 import com.codahale.metrics.MetricRegistry;
 import com.mchange.v2.c3p0.ComboPooledDataSource;
@@ -26,21 +26,19 @@ import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
 
-public class PostgresqlProducer extends AbstractProducer implements StoppableTask {
-	static final Logger LOG = LoggerFactory.getLogger(PostgresqlProducer.class);
-
-	private Properties pgProperties;
-	private ComboPooledDataSource postgresDs;
-	private JdbcTemplate postgresJdbcTemplate;
+public class JdbcProducer extends AbstractProducer implements StoppableTask {
+	protected final Logger LOG = LoggerFactory.getLogger(getClass());
+	private Properties properties;
+	private ComboPooledDataSource targetDs;
+	private JdbcTemplate targetJdbcTemplate;
 	private JdbcTemplate mysqlJdbcTemplate;
-	private DataSourceTransactionManager pgTransactionManager;
+	private DataSourceTransactionManager targetTransactionManager;
 	private DataSourceTransactionManager mysqlTransactionManager;
 	private TableSyncLogic tableSyncLogic;
-
 	private Deque<UpdateSql> sqlList = new ArrayDeque<>();
 	private volatile Long lastUpdate = System.currentTimeMillis();
 	private Set<String> syncDbs;
-	private Set<String> asyncCommitTables;
+	private String type;
 	private Integer delay2AsyncCommitSecond;
 	private Integer batchLimit;
 	private Integer batchTransactionLimit;
@@ -56,45 +54,49 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 	private boolean initDataDelete;
 	private Position initPosition = null;
 
-	public PostgresqlProducer(MaxwellContext context) {
+	public JdbcProducer(MaxwellContext context) {
 		super(context);
 		context.getConfig().outputConfig.byte2base64 = false;
-		pgProperties = context.getConfig().pgProperties;
-		resolvePkConflict = "true".equalsIgnoreCase(pgProperties.getProperty("resolvePkConflict", "true"));
-		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("syncDbs", ""), ",")));
-		asyncCommitTables = new HashSet<>(Arrays.asList(StringUtils.split(pgProperties.getProperty("asyncCommitTables", ""), ",")));
-		delay2AsyncCommitSecond = Integer.parseInt(pgProperties.getProperty("delay2AsyncCommitSecond", "60"));
-		initSchemas = "true".equalsIgnoreCase(pgProperties.getProperty("initSchemas"));
-		batchLimit = Integer.parseInt(pgProperties.getProperty("batchLimit", "1000"));
-		batchTransactionLimit = Integer.parseInt(pgProperties.getProperty("batchTransactionLimit", "160000"));
-		sqlMergeSize = Integer.parseInt(pgProperties.getProperty("sqlMergeSize", "5"));
-		maxPoolSize = Integer.parseInt(pgProperties.getProperty("maxPoolSize", "10"));
-		syncIndexMinute = Integer.parseInt(pgProperties.getProperty("syncIndexMinute", "600"));
+		properties = context.getConfig().jdbcProperties;
+		resolvePkConflict = "true".equalsIgnoreCase(properties.getProperty("resolvePkConflict", "true"));
+		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(properties.getProperty("syncDbs", ""), ",")));
+		delay2AsyncCommitSecond = Integer.parseInt(properties.getProperty("delay2AsyncCommitSecond", "60"));
+		initSchemas = "true".equalsIgnoreCase(properties.getProperty("initSchemas"));
+		batchLimit = Integer.parseInt(properties.getProperty("batchLimit", "1000"));
+		batchTransactionLimit = Integer.parseInt(properties.getProperty("batchTransactionLimit", "160000"));
+		sqlMergeSize = Integer.parseInt(properties.getProperty("sqlMergeSize", "5"));
+		maxPoolSize = Integer.parseInt(properties.getProperty("maxPoolSize", "10"));
+		syncIndexMinute = Integer.parseInt(properties.getProperty("syncIndexMinute", "600"));
 		// init data
-		initData = "true".equalsIgnoreCase(pgProperties.getProperty("initData"));
-		initDataLock = "true".equalsIgnoreCase(pgProperties.getProperty("initDataLock", "true"));
-		initDataThreadNum = Integer.parseInt(pgProperties.getProperty("initDataThreadNum", "10"));
-		initDataDelete = "true".equalsIgnoreCase(pgProperties.getProperty("initDataDelete"));
+		initData = "true".equalsIgnoreCase(properties.getProperty("initData"));
+		initDataLock = "true".equalsIgnoreCase(properties.getProperty("initDataLock", "true"));
+		initDataThreadNum = Integer.parseInt(properties.getProperty("initDataThreadNum", "10"));
+		initDataDelete = "true".equalsIgnoreCase(properties.getProperty("initDataDelete"));
 		if (initData) {
 			maxPoolSize = Math.max(initDataThreadNum, maxPoolSize);
 		}
-		postgresDs = new ComboPooledDataSource();
-		postgresDs.setJdbcUrl(pgProperties.getProperty("url"));
-		postgresDs.setUser(pgProperties.getProperty("user"));
-		postgresDs.setPassword(pgProperties.getProperty("password"));
-		postgresDs.setTestConnectionOnCheckout(true);
-		postgresDs.setMinPoolSize(1);
-		postgresDs.setMaxPoolSize(maxPoolSize);
-		postgresDs.setMaxIdleTime(180);
-		postgresDs.setPreferredTestQuery("select 1");
-		postgresDs.setAcquireRetryAttempts(Integer.MAX_VALUE);
-		postgresDs.setAcquireRetryDelay(3000);
-		postgresJdbcTemplate = new JdbcTemplate(postgresDs, true);
+		String url = properties.getProperty("url");
+		type = properties.getProperty("type");
+		if (StringUtils.isEmpty(type)) {
+			type = StringUtils.split(url, ":")[1].toLowerCase();
+		}
+		targetDs = new ComboPooledDataSource();
+		targetDs.setJdbcUrl(url);
+		targetDs.setUser(properties.getProperty("user"));
+		targetDs.setPassword(properties.getProperty("password"));
+		targetDs.setTestConnectionOnCheckout(true);
+		targetDs.setMinPoolSize(1);
+		targetDs.setMaxPoolSize(maxPoolSize);
+		targetDs.setMaxIdleTime(180);
+		targetDs.setPreferredTestQuery("select 1");
+		targetDs.setAcquireRetryAttempts(Integer.MAX_VALUE);
+		targetDs.setAcquireRetryDelay(3000);
+		targetJdbcTemplate = new JdbcTemplate(targetDs, true);
 		C3P0ConnectionPool sourcePool = (C3P0ConnectionPool) context.getReplicationConnectionPool();
 		mysqlJdbcTemplate = new JdbcTemplate(sourcePool.getCpds(), true);
-		pgTransactionManager = new DataSourceTransactionManager(postgresDs);
+		targetTransactionManager = new DataSourceTransactionManager(targetDs);
 		mysqlTransactionManager = new DataSourceTransactionManager(sourcePool.getCpds());
-		tableSyncLogic = new TableSyncLogic(mysqlJdbcTemplate, postgresJdbcTemplate);
+		tableSyncLogic = new TableSyncLogic(this);
 		if (syncDbs.size() == 1 && syncDbs.contains("all")) {
 			syncDbs.clear();
 			syncDbs.addAll(tableSyncLogic.getDbs());
@@ -193,21 +195,18 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		UpdateSql updateSql = sqlList.getLast();
 		RowMap rowMap = updateSql.getRowMap();
 		Deque<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
-		TransactionStatus status = pgTransactionManager.getTransaction(new DefaultTransactionDefinition());
+		TransactionStatus status = targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
-			if (groupList.size() == 1 && asyncCommitTables.contains(rowMap.getTable()) || this.isDelay2Async()) {
-				postgresJdbcTemplate.execute("set local synchronous_commit = off");
-			}
 			for (UpdateSqlGroup group : groupList) {
 				this.batchUpdateGroup(group);
 			}
-			pgTransactionManager.commit(status);
+			targetTransactionManager.commit(status);
 			this.context.setPosition(rowMap);
 			LOG.info("batchUpdate size={},mergeSize={},time={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate);
 			sqlList.clear();
 		} catch (Exception e) {
 			LOG.info("batchUpdate fail size={},mergeSize={},time={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate);
-			pgTransactionManager.rollback(status);
+			targetTransactionManager.rollback(status);
 			if (this.isMsgException(e, "does not exist")) {
 				for (UpdateSqlGroup group : groupList) {
 					try {
@@ -229,7 +228,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 				while (it.hasNext()) {
 					UpdateSql sql = it.next();
 					try {
-						this.postgresJdbcTemplate.update(sql.getSql(), sql.getArgs());
+						this.targetJdbcTemplate.update(sql.getSql(), sql.getArgs());
 					} catch (Exception e1) {
 						if (!this.isMsgException(e1, "duplicate key value")) {
 							throw e1;
@@ -249,10 +248,10 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		long start = System.currentTimeMillis();
 		String sql = group.getSqlWithArgsList().size() == group.getArgsList().size() ? group.getSql() : (group.getSql() + "...");
 		if (group.getSqlWithArgsList().size() > group.getArgsList().size()) {
-			postgresJdbcTemplate.batchUpdate(group.getSqlWithArgsList().toArray(new String[group.getSqlWithArgsList().size()]));
+			targetJdbcTemplate.batchUpdate(group.getSqlWithArgsList().toArray(new String[group.getSqlWithArgsList().size()]));
 			LOG.info("batchUpdateGroup1 size={},time={},sql={}", group.getSqlWithArgsList().size(), System.currentTimeMillis() - start, sql);
 		} else {
-			this.postgresJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+			this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 			LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getArgsList().size(), System.currentTimeMillis() - start, sql);
 		}
 	}
@@ -289,8 +288,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			if ("delete".equals(r.getRowType()) && r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
 				Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
-				String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ")  //
-					.append(delimitPg(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
+				String sql = new StringBuilder().append("delete from ").append(delimit(r.getDatabase(), r.getTable())).append(" where ")  //
+					.append(delimit(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
 				List<Object[]> argsList = new ArrayList<>();
 				argsList.add(ids);
 				group.setSql(sql);
@@ -346,16 +345,22 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Object[] args = new Object[r.getData().size()];
 		int i = 0;
 		for (Map.Entry<String, Object> e : r.getData().entrySet()) {
-			sqlK.append(delimitPg(e.getKey())).append(",");
+			sqlK.append(delimit(e.getKey())).append(',');
 			sqlV.append("?,");
 			args[i++] = this.convertValue(e.getValue());
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		sqlV.deleteCharAt(sqlV.length() - 1);
 		// insert into %s.%s(%s) values(%s) on conflict(%s) do nothing
-		sql.append("insert into ").append(delimitPg(r.getDatabase(), r.getTable())).append("(").append(sqlK).append(") values(").append(sqlV).append(")");
 		if (resolvePkConflict) {
-			sql.append(" on conflict(").append(delimitPg(StringUtils.join(keys, delimitPg(",")))).append(") do nothing");
+			if (isPg()) {
+				sql.append("insert into ").append(delimit(r.getDatabase(), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')') //
+					.append(" on conflict(").append(delimit(StringUtils.join(keys, delimit(",")))).append(") do nothing");
+			} else {
+				sql.append("insert ignore into ").append(delimit(r.getDatabase(), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')');
+			}
+		} else {
+			sql.append("insert into ").append(delimit(r.getDatabase(), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')');
 		}
 		return new UpdateSql(sql.toString(), args, r);
 	}
@@ -373,7 +378,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Object[] args = new Object[oldData.size() + keys.size()];
 		int i = 0;
 		for (String updateKey : oldData.keySet()) {
-			String key = this.delimitPg(updateKey);
+			String key = this.delimit(updateKey);
 			Object value = this.convertValue(data.get(updateKey));
 			sqlK.append(key).append("=?,");
 			args[i++] = value;
@@ -392,7 +397,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			sqlWithArgs.append(" where ");
 		}
 		for (String pri : keys) {
-			String key = this.delimitPg(pri);
+			String key = this.delimit(pri);
 			Object value = oldData.get(pri);
 			if (value == null) {
 				value = data.get(pri);
@@ -407,7 +412,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		// update "%s"."%s" set %s where %s
-		String table = this.delimitPg(r.getDatabase(), r.getTable());
+		String table = this.delimit(r.getDatabase(), r.getTable());
 		String sql = new StringBuilder().append("update ").append(table).append(" set ").append(sqlK).append(" where ").append(sqlPri).toString();
 		if (sqlWithArgs != null) {
 			sqlWithArgs.delete(sqlWithArgs.length() - 4, sqlWithArgs.length());
@@ -425,28 +430,24 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		Object[] args = new Object[r.getPrimaryKeyColumns().size()];
 		int i = 0;
 		for (String pri : r.getPrimaryKeyColumns()) {
-			sqlPri.append(delimitPg(pri)).append("=? and ");
+			sqlPri.append(delimit(pri)).append("=? and ");
 			args[i++] = data.get(pri);
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		// delete from "%s"."%s" where %s
-		String sql = new StringBuilder().append("delete from ").append(delimitPg(r.getDatabase(), r.getTable())).append(" where ").append(sqlPri).toString();
+		String sql = new StringBuilder().append("delete from ").append(delimit(r.getDatabase(), r.getTable())).append(" where ").append(sqlPri).toString();
 		return new UpdateSql(sql, args, r);
 	}
 
-	private boolean isDelay2Async() {
-		try {
-			return delay2AsyncCommitSecond > 0 && (System.currentTimeMillis() - context.getPosition().getLastHeartbeatRead()) > delay2AsyncCommitSecond * 1000L;
-		} catch (SQLException e) {
-			LOG.error("getPosition error", e);
-			return false;
-		}
+	public char quote() {
+		return isPg() ? '"' : '`';
 	}
 
-	public String delimitPg(String... keys) {
+	public String delimit(String... keys) {
+		char quote = quote();
 		StringBuilder s = new StringBuilder();
 		for (String key : keys) {
-			s.append('"').append(key).append('"').append('.');
+			s.append(quote).append(key).append(quote).append('.');
 		}
 		if (s.length() > 0) {
 			s.deleteCharAt(s.length() - 1);
@@ -463,6 +464,30 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		return null;
 	}
 
+	public String getType() {
+		return type;
+	}
+
+	public boolean isPg() {
+		return "postgresql".equals(type);
+	}
+
+	public boolean isMysql() {
+		return "mysql".equals(type);
+	}
+
+	public boolean isDoris() {
+		return "doris".equals(type);
+	}
+
+	public JdbcTemplate getTargetJdbcTemplate() {
+		return targetJdbcTemplate;
+	}
+
+	public JdbcTemplate getMysqlJdbcTemplate() {
+		return mysqlJdbcTemplate;
+	}
+
 	@Override
 	public StoppableTask getStoppableTask() {
 		return this;
@@ -471,8 +496,8 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 
 	@Override
 	public void requestStop() throws Exception {
-		if (postgresDs != null) {
-			postgresDs.close();
+		if (targetDs != null) {
+			targetDs.close();
 		}
 	}
 
@@ -540,9 +565,9 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		}
 	}
 
-	private void pgExecute(String sql) {
-		LOG.info("pgExecute:{}", sql);
-		postgresJdbcTemplate.execute(sql);
+	private void targetExecute(String sql) {
+		LOG.info("targetExecute:{}", sql);
+		targetJdbcTemplate.execute(sql);
 	}
 
 	// Refer to  https://github.com/ClickHouse/ClickHouse/blob/master/src/Databases/MySQL/MaterializeMetadata.cpp
@@ -586,6 +611,7 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			}
 			// commit;
 			mysqlTransactionManager.commit(status);
+			waitFinish(executor);
 		} catch (Exception e) {
 			mysqlTransactionManager.rollback(status);
 			LOG.error("sync data error", e);
@@ -600,6 +626,16 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 			}
 		}
 		LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
+	}
+
+	private void waitFinish(ThreadPoolExecutor executor) {
+		while (executor.getTaskCount() != executor.getCompletedTaskCount()) {
+			try {
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				throw new RuntimeException(e);
+			}
+		}
 	}
 
 	private Integer initTableData(String database, String table, ThreadPoolExecutor executor) {
@@ -632,16 +668,18 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 		private void asyncBatchInsert(final String sql, final List<Object[]> argsList) {
 			executor.execute(() -> {
 				long start = System.currentTimeMillis();
-				TransactionStatus statusPg = pgTransactionManager.getTransaction(new DefaultTransactionDefinition());
+				TransactionStatus statusPg = targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
 				try {
-					postgresJdbcTemplate.execute("set local synchronous_commit = off");
-					postgresJdbcTemplate.batchUpdate(sql, argsList);
+					if (isPg()) {
+						targetJdbcTemplate.execute("set local synchronous_commit = off");
+					}
+					targetJdbcTemplate.batchUpdate(sql, argsList);
 				} catch (Exception e) {
-					pgTransactionManager.rollback(statusPg);
+					targetTransactionManager.rollback(statusPg);
 					LOG.error("batchUpdate error,sql={},args={}", sql, argsList.get(0), e);
 					throw e;
 				}
-				pgTransactionManager.commit(statusPg);
+				targetTransactionManager.commit(statusPg);
 				LOG.info("batch init insert,size={},time={},sql={}", argsList.size(), System.currentTimeMillis() - start, sql);
 			});
 		}
@@ -655,19 +693,19 @@ public class PostgresqlProducer extends AbstractProducer implements StoppableTas
 					columnCount = rsmd.getColumnCount();
 					columnNames = new String[columnCount];
 					for (int i = 0; i < columnCount; i++) {
-						columnNames[i] = delimitPg(JdbcUtils.lookupColumnName(rsmd, i + 1));
+						columnNames[i] = delimit(JdbcUtils.lookupColumnName(rsmd, i + 1));
 					}
-					insertSql = String.format("insert into %s(%s) values(%s)", delimitPg(database, table), StringUtils.join(columnNames, ","), StringUtils.join(Collections.nCopies(columnNames.length, "?"), ","));
-					if (postgresJdbcTemplate.queryForList(String.format("select 1 from %s limit 1", delimitPg(database, table)), Integer.class).size() > 0) {
+					insertSql = String.format("insert into %s(%s) values(%s)", delimit(database, table), StringUtils.join(columnNames, ","), StringUtils.join(Collections.nCopies(columnNames.length, "?"), ","));
+					if (targetJdbcTemplate.queryForList(String.format("select 1 from %s limit 1", delimit(database, table)), Integer.class).size() > 0) {
 						if (initDataDelete) {
 							try {
-								pgExecute("truncate " + delimitPg(database, table));
+								targetExecute("truncate " + delimit(database, table));
 							} catch (Exception e) {
 								LOG.info("truncate fail,change to delete... {}", e.getMessage());
-								pgExecute("delete from " + delimitPg(database, table));
+								targetExecute("delete from " + delimit(database, table));
 							}
 						} else {
-							throw new IllegalArgumentException(String.format("init data fail,postgresql table not empty:%s.%s", database, table));
+							throw new IllegalArgumentException(String.format("init data fail,target table not empty:%s.%s", database, table));
 						}
 					}
 				}

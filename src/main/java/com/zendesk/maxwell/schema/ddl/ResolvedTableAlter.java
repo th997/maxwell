@@ -18,7 +18,7 @@ public class ResolvedTableAlter extends ResolvedSchemaChange {
 	@JsonProperty("def")
 	public Table newTable;
 
-	public ArrayList<ColumnMod> columnMods;
+	public ArrayList columnMods;
 
 	public ResolvedTableAlter() { }
 	public ResolvedTableAlter(String database, String table, Table oldTable, Table newTable) {
@@ -29,7 +29,7 @@ public class ResolvedTableAlter extends ResolvedSchemaChange {
 		this.newTable = newTable;
 	}
 
-	public ResolvedTableAlter(String database, String table, Table oldTable, Table newTable, ArrayList<ColumnMod> columnMods) {
+	public ResolvedTableAlter(String database, String table, Table oldTable, Table newTable, ArrayList columnMods) {
 		this(database, table, oldTable, newTable);
 		this.columnMods = columnMods;
 	}

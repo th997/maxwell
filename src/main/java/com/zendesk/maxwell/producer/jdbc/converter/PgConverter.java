@@ -59,9 +59,9 @@ public class PgConverter implements Converter {
 
 	@Override
 	public boolean isSameType(TableColumn c) {
-		return Objects.equals(source.getColumnName(), c.getColumnName())
-			&& (Objects.equals(source.getDataType(), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getDataType()))
-			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null)
+		return Objects.equals(source.getColumnName(), c.getColumnName()) //
+			&& (Objects.equals(source.getDataType(), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getDataType())) //
+			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null) //
 			&& (Objects.equals(source.getNumericPrecision(), c.getNumericPrecision()) && Objects.equals(source.getNumericScale(), c.getNumericScale()) || !"decimal".equals(source.getDataType()));
 	}
 

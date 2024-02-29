@@ -33,7 +33,7 @@ public class TableSyncLogic {
 	private static final String SQL_GET_MYSQL_INDEX = "show index from `%s`.`%s`";
 
 	private static final String SQL_GET_POSTGRES_FIELD = "select column_name,udt_name data_type,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able from information_schema.columns t where t.table_schema =? and table_name =?";
-	private static final String SQL_GET_MYSQL_FIELD = "select column_name,column_type,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' auto_increment from information_schema.columns t where t.table_schema =? and table_name =? order by ordinal_position";
+	private static final String SQL_GET_MYSQL_FIELD = "select column_name,column_type,data_type,column_comment,character_maximum_length str_len,numeric_precision,numeric_scale,column_default,is_nullable = 'YES' null_able,column_key = 'PRI' pri,extra ='auto_increment' as \"auto_increment\" from information_schema.columns t where t.table_schema =? and table_name =? order by ordinal_position";
 	private static final String SQL_GET_MYSQL_TABLE = "select table_name from information_schema.tables where table_type != 'VIEW' and table_schema =?";
 	private static final String SQL_POSTGRES_COMMENT = "comment on column \"%s\".\"%s\".\"%s\" is '%s'";
 	private static final String SQL_GET_DB = "select count(*) from information_schema.schemata where schema_name =?";
@@ -55,6 +55,9 @@ public class TableSyncLogic {
 	public synchronized boolean syncTable(String database, String table, boolean syncIndex) {
 		LOG.info("syncTable start:{}.{}", database, table);
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
+		if (mysqlFields.stream().filter(o -> o.isPri()).count() == 0) {
+			return false;
+		}
 		String fullTableName = producer.delimit(database, table);
 		if (mysqlFields.isEmpty()) {
 			this.executeDDL(String.format(SQL_DROP_TABLE, fullTableName));
@@ -67,21 +70,29 @@ public class TableSyncLogic {
 				this.executeDDL(String.format(SQL_CREATE_DB, producer.delimit(database)));
 				LOG.info("database {} not exists,created it!", database);
 			}
-			StringBuilder fieldsB = new StringBuilder();
-			for (int i = 0, size = mysqlFields.size(); i < size; i++) {
-				TableColumn column = mysqlFields.get(i);
-				Converter converter = Converter.getConverter(column, producer.getType());
-				if (i == size - 1) {
-					fieldsB.append(converter.toTargetCol());
-				} else {
-					fieldsB.append(converter.toTargetCol() + " ,\r\n");
+			if (producer.isMysql()) {
+				String createSql = this.getMysqlCreateSql(database, table);
+				this.executeDDL(createSql);
+			} else {
+				StringBuilder fieldsB = new StringBuilder();
+				for (int i = 0, size = mysqlFields.size(); i < size; i++) {
+					TableColumn column = mysqlFields.get(i);
+					Converter converter = Converter.getConverter(column, producer.getType());
+					if (i == size - 1) {
+						fieldsB.append(converter.toTargetCol());
+					} else {
+						fieldsB.append(converter.toTargetCol() + " ,\r\n");
+					}
+					if (producer.isPg() && StringUtils.isNotEmpty(column.getColumnComment())) {
+						commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, column.getColumnName(), StringEscapeUtils.escapeSql(column.getColumnComment())));
+					}
 				}
-				if (producer.isPg() && StringUtils.isNotEmpty(column.getColumnComment())) {
-					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, column.getColumnName(), StringEscapeUtils.escapeSql(column.getColumnComment())));
+				String sql = String.format(SQL_CREATE, fullTableName, fieldsB);
+				if (producer.isDoris()) {
+					sql += this.getDorisDesc(mysqlFields);
 				}
+				this.executeDDL(sql);
 			}
-			String sql = String.format(SQL_CREATE, fullTableName, fieldsB);
-			this.executeDDL(sql);
 		} else {
 			Map<String, TableColumn> mysqlMap = mysqlFields.stream().collect(Collectors.toMap(TableColumn::getColumnName, Function.identity()));
 			Map<String, TableColumn> postgresMap = targetFields.stream().collect(Collectors.toMap(TableColumn::getColumnName, Function.identity()));
@@ -93,7 +104,7 @@ public class TableSyncLogic {
 			for (Map.Entry<String, TableColumn> e : diff.entriesOnlyOnLeft().entrySet()) {
 				Converter converter = Converter.getConverter(e.getValue(), producer.getType());
 				e.getValue().setNullAble(true);
-				sql.append("add " + converter.toTargetCol() + ",");
+				sql.append((producer.isDoris() ? "add column " : "add ") + converter.toTargetCol() + ",");
 				if (producer.isPg() && StringUtils.isNotEmpty(e.getValue().getColumnComment())) {
 					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
 				}
@@ -123,6 +134,8 @@ public class TableSyncLogic {
 						if (StringUtils.isNotEmpty(mysql.getColumnComment())) {
 							commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));
 						}
+					} else if (producer.isDoris()) {
+						this.executeDDL(String.format("alter table %s modify column %s", fullTableName, converter.toTargetCol()));
 					} else {
 						this.executeDDL(String.format("alter table %s change %s %s", fullTableName, columnName, converter.toTargetCol()));
 					}
@@ -143,30 +156,54 @@ public class TableSyncLogic {
 		return true;
 	}
 
+	private String getDorisDesc(List<TableColumn> mysqlFields) {
+		String key = mysqlFields.stream().filter(o -> o.isPri()).map(TableColumn::getColumnName).collect(Collectors.joining(","));
+		StringBuilder sb = new StringBuilder();
+		sb.append(String.format("\nunique key(%s)\n", key));
+		sb.append(String.format("distributed by hash(%s) buckets 1\n", key));
+		sb.append(String.format("properties (\n", key));
+		sb.append(String.format("\"replication_allocation\" = \"tag.location.default: 1\",\n" + //
+			"\"enable_unique_key_merge_on_write\" = \"true\"\n" + //
+			")"));
+		return sb.toString();
+	}
+
+	private String getMysqlCreateSql(String database, String table) {
+		String tableName = String.format("`%s`", table);
+		String fullTableName = String.format("`%s`.`%s`", database, table);
+		List<Map<String, Object>> lines = producer.getMysqlJdbcTemplate().queryForList("show create table " + fullTableName);
+		String createSql = lines.get(0).get("Create Table").toString();
+		createSql = createSql.replaceFirst(tableName, fullTableName);
+		return createSql;
+	}
+
 	public void syncIndex(String database, String table) {
+		if (producer.isDoris()) {
+			return;
+		}
 		Map<String, List<TableIndex>> mysqlGroup = this.getMysqlIndex(database, table);
 		Map<String, List<TableIndex>> targetGroup = this.getTargetIndex(database, table);
 		Iterator<Map.Entry<String, List<TableIndex>>> it = targetGroup.entrySet().iterator();
 		while (it.hasNext()) {
 			Map.Entry<String, List<TableIndex>> e = it.next();
 			TableIndex index0 = e.getValue().get(0);
-			if (!index0.isNonUnique() && !index0.isPri()) {
+			if (producer.isPg() && !index0.isNonUnique() && !index0.isPri()) {
 				this.dropIndex(database, table, index0);
 				it.remove();
 			}
 		}
 		MapDifference<String, List<TableIndex>> diff = Maps.difference(mysqlGroup, targetGroup);
-		String pgIndexPrefix = table + "_";
+		String indexPrefix = producer.isPg() ? (table + "_") : "";
 		for (List<TableIndex> index : diff.entriesOnlyOnRight().values()) {
 			String keyName = index.get(0).getKeyName();
-			if (keyName.startsWith(pgIndexPrefix) && !index.get(0).isPri()) {
+			if (keyName.startsWith(indexPrefix) && !index.get(0).isPri()) {
 				this.dropIndex(database, table, index.get(0));
 			}
 		}
 		for (List<TableIndex> index : diff.entriesOnlyOnLeft().values()) {
 			String keyName = index.get(0).getKeyName();
-			String indexName = pgIndexPrefix + keyName; // The index name should be unique in postgres
-			if (indexName.length() > PG_KEY_LEN) {
+			String indexName = indexPrefix + keyName; // The index name should be unique in postgres
+			if (producer.isPg() && indexName.length() > PG_KEY_LEN) {
 				indexName = indexName.substring(0, PG_KEY_LEN);
 			}
 			String cols = producer.quote() + StringUtils.join(index.stream().map(TableIndex::getColumnName).collect(Collectors.toList()), producer.quote() + "," + producer.quote()) + producer.quote();
@@ -286,8 +323,11 @@ public class TableSyncLogic {
 		// alter table xxx change column_old column_new xxx
 		if (!CollectionUtils.isEmpty(change.columnMods)) {
 			String alterSql = "alter table %s rename column %s to %s";
+			if (producer.isDoris()) {
+				alterSql = "alter table %s rename column %s %s";
+			}
 			boolean onlyRename = false;
-			for (ColumnMod mod : change.columnMods) {
+			for (Object mod : change.columnMods) {
 				if (mod instanceof RenameColumnMod) {
 					RenameColumnMod tmpMod = (RenameColumnMod) mod;
 					this.executeDDL(String.format(alterSql, producer.delimit(r.getDatabase(), r.getTable()), producer.delimit(tmpMod.oldName), producer.delimit(tmpMod.newName)));

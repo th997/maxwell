@@ -144,7 +144,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				sql = this.sqlInsert(r);
 				break;
 			case "update":
-				sql = this.sqlUpdate(r);
+				if (isDoris()) {
+					sql = this.sqlInsert(r);
+				} else {
+					sql = this.sqlUpdate(r);
+				}
 				break;
 			case "delete":
 				sql = this.sqlDelete(r);
@@ -352,7 +356,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		sqlK.deleteCharAt(sqlK.length() - 1);
 		sqlV.deleteCharAt(sqlV.length() - 1);
 		// insert into %s.%s(%s) values(%s) on conflict(%s) do nothing
-		if (resolvePkConflict) {
+		if (!isDoris() && resolvePkConflict) {
 			if (isPg()) {
 				sql.append("insert into ").append(delimit(r.getDatabase(), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')') //
 					.append(" on conflict(").append(delimit(StringUtils.join(keys, delimit(",")))).append(") do nothing");

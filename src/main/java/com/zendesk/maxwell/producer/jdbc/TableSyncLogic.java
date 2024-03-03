@@ -57,6 +57,8 @@ public class TableSyncLogic {
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
 		if (mysqlFields.stream().filter(o -> o.isPri()).count() == 0) {
 			return false;
+		} else if (producer.isDoris()) {
+			mysqlFields.sort(Comparator.comparing(TableColumn::isPri).reversed());
 		}
 		String fullTableName = producer.delimit(database, table);
 		if (mysqlFields.isEmpty()) {
@@ -157,7 +159,8 @@ public class TableSyncLogic {
 	}
 
 	private String getDorisDesc(List<TableColumn> mysqlFields) {
-		String key = mysqlFields.stream().filter(o -> o.isPri()).map(TableColumn::getColumnName).collect(Collectors.joining(","));
+		String key = mysqlFields.stream().filter(o -> o.isPri()).map(TableColumn::getColumnName).collect(Collectors.joining("`,`"));
+		key = "`" + key + "`";
 		StringBuilder sb = new StringBuilder();
 		sb.append(String.format("\nunique key(%s)\n", key));
 		sb.append(String.format("distributed by hash(%s) buckets 1\n", key));

@@ -71,11 +71,19 @@ public class DorisConverter implements Converter {
 				} else {
 					type = "bigint";
 				}
+			} else if (source.getDataType().equalsIgnoreCase("decimal")) {
+				type = source.getColumnType().replace("unsigned", "");
 			} else {
 				type = source.getDataType();
 			}
 		}
-		if (source.getDataType().endsWith("text") || source.getDataType().endsWith("blob") || source.getDataType().endsWith("binary") || (source.getDataType().contains("char") && !source.isPri())) {
+		if (source.getDataType().endsWith("text") //
+			|| source.getDataType().endsWith("blob") //
+			|| source.getDataType().endsWith("binary") //
+			|| source.getDataType().endsWith("enum") //
+			|| source.getDataType().endsWith("set") //
+			|| source.getDataType().endsWith("time") //
+			|| (source.getDataType().contains("char") && !source.isPri())) {
 			type = "string";
 		}
 		if (source.getDataType().equals("double") || source.getDataType().equals("float")) {
@@ -86,6 +94,9 @@ public class DorisConverter implements Converter {
 		}
 		if (source.getDataType().equals("bit")) {
 			type = "bigint";
+		}
+		if (source.getDataType().equals("year")) {
+			type = "smallint";
 		}
 		if (type.contains("unsigned")) {
 			System.out.println(source);

@@ -55,22 +55,23 @@ public class TableSyncLogic {
 	public synchronized boolean syncTable(String database, String table, boolean syncIndex) {
 		LOG.info("syncTable start:{}.{}", database, table);
 		List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
-		if (mysqlFields.stream().filter(o -> o.isPri()).count() == 0) {
+		if (mysqlFields.stream().noneMatch(TableColumn::isPri)) {
 			return false;
 		} else if (producer.isDoris()) {
 			mysqlFields.sort(Comparator.comparing(TableColumn::isPri).reversed());
 		}
-		String fullTableName = producer.delimit(database, table);
+		String targetSchema = producer.getSchema(database);
+		String fullTableName = producer.delimit(targetSchema, table);
 		if (mysqlFields.isEmpty()) {
 			this.executeDDL(String.format(SQL_DROP_TABLE, fullTableName));
 			return false;
 		}
-		List<TableColumn> targetFields = this.getTargetFields(database, table);
+		List<TableColumn> targetFields = this.getTargetFields(targetSchema, table);
 		List<String> commentSqlList = new ArrayList<>();
 		if (targetFields.isEmpty()) {
-			if (!this.existsTargetDb(database)) {
-				this.executeDDL(String.format(SQL_CREATE_DB, producer.delimit(database)));
-				LOG.info("database {} not exists,created it!", database);
+			if (!this.existsTargetDb(targetSchema)) {
+				this.executeDDL(String.format(SQL_CREATE_DB, producer.delimit(targetSchema)));
+				LOG.info("database {} not exists,created it!", targetSchema);
 			}
 			if (producer.isMysql()) {
 				String createSql = this.getMysqlCreateSql(database, table);
@@ -83,10 +84,10 @@ public class TableSyncLogic {
 					if (i == size - 1) {
 						fieldsB.append(converter.toTargetCol());
 					} else {
-						fieldsB.append(converter.toTargetCol() + " ,\r\n");
+						fieldsB.append(converter.toTargetCol()).append(" ,\r\n");
 					}
 					if (producer.isPg() && StringUtils.isNotEmpty(column.getColumnComment())) {
-						commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, column.getColumnName(), StringEscapeUtils.escapeSql(column.getColumnComment())));
+						commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, targetSchema, table, column.getColumnName(), StringEscapeUtils.escapeSql(column.getColumnComment())));
 					}
 				}
 				String sql = String.format(SQL_CREATE, fullTableName, fieldsB);
@@ -108,7 +109,7 @@ public class TableSyncLogic {
 				e.getValue().setNullAble(true);
 				sql.append((producer.isDoris() ? "add column " : "add ") + converter.toTargetCol() + ",");
 				if (producer.isPg() && StringUtils.isNotEmpty(e.getValue().getColumnComment())) {
-					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
+					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, targetSchema, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
 				}
 			}
 			if (sql.length() > 0) {
@@ -134,7 +135,7 @@ public class TableSyncLogic {
 							this.executeDDL(String.format("alter table %s alter column %s type %s using %s::%s", fullTableName, columnName, converter.toColType(), columnName, converter.typeGet()));
 						}
 						if (StringUtils.isNotEmpty(mysql.getColumnComment())) {
-							commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, database, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));
+							commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, targetSchema, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));
 						}
 					} else if (producer.isDoris()) {
 						this.executeDDL(String.format("alter table %s modify column %s", fullTableName, converter.toTargetCol()));
@@ -159,24 +160,35 @@ public class TableSyncLogic {
 	}
 
 	private String getDorisDesc(List<TableColumn> mysqlFields) {
-		String key = mysqlFields.stream().filter(o -> o.isPri()).map(TableColumn::getColumnName).collect(Collectors.joining("`,`"));
+		String key = mysqlFields.stream().filter(TableColumn::isPri).map(TableColumn::getColumnName).collect(Collectors.joining("`,`"));
 		key = "`" + key + "`";
 		StringBuilder sb = new StringBuilder();
-		sb.append(String.format("\nunique key(%s)\n", key));
+		if (producer.isStarRocks()) {
+			sb.append(String.format("\nprimary key(%s)\n", key));
+		} else {
+			sb.append(String.format("\nunique key(%s)\n", key));
+		}
 		sb.append(String.format("distributed by hash(%s) buckets 1\n", key));
-		sb.append(String.format("properties (\n", key));
-		sb.append(String.format("\"replication_allocation\" = \"tag.location.default: 1\",\n" + //
-			"\"enable_unique_key_merge_on_write\" = \"true\"\n" + //
-			")"));
+		if (!producer.isStarRocks()) {
+			sb.append("properties (\n");
+			String kv = "\"%s\" = \"%s\",\n";
+			sb.append(String.format(kv, "replication_allocation", "tag.location.default: 1"));
+			sb.append(String.format(kv, "enable_unique_key_merge_on_write", "true"));
+//			sb.append(String.format(kv, "light_schema_change", "true"));
+//			sb.append(String.format(kv, "store_row_column", "true"));
+			sb.deleteCharAt(sb.length() - 2);
+			sb.append(")");
+		}
 		return sb.toString();
 	}
 
 	private String getMysqlCreateSql(String database, String table) {
 		String tableName = String.format("`%s`", table);
 		String fullTableName = String.format("`%s`.`%s`", database, table);
+		String targetFullTableName = String.format("`%s`.`%s`", producer.getSchema(database), table);
 		List<Map<String, Object>> lines = producer.getMysqlJdbcTemplate().queryForList("show create table " + fullTableName);
 		String createSql = lines.get(0).get("Create Table").toString();
-		createSql = createSql.replaceFirst(tableName, fullTableName);
+		createSql = createSql.replaceFirst(tableName, targetFullTableName);
 		return createSql;
 	}
 
@@ -184,14 +196,15 @@ public class TableSyncLogic {
 		if (producer.isDoris()) {
 			return;
 		}
+		String targetSchema = producer.getSchema(database);
 		Map<String, List<TableIndex>> mysqlGroup = this.getMysqlIndex(database, table);
-		Map<String, List<TableIndex>> targetGroup = this.getTargetIndex(database, table);
+		Map<String, List<TableIndex>> targetGroup = this.getTargetIndex(targetSchema, table);
 		Iterator<Map.Entry<String, List<TableIndex>>> it = targetGroup.entrySet().iterator();
 		while (it.hasNext()) {
 			Map.Entry<String, List<TableIndex>> e = it.next();
 			TableIndex index0 = e.getValue().get(0);
 			if (producer.isPg() && !index0.isNonUnique() && !index0.isPri()) {
-				this.dropIndex(database, table, index0);
+				this.dropIndex(targetSchema, table, index0);
 				it.remove();
 			}
 		}
@@ -200,7 +213,7 @@ public class TableSyncLogic {
 		for (List<TableIndex> index : diff.entriesOnlyOnRight().values()) {
 			String keyName = index.get(0).getKeyName();
 			if (keyName.startsWith(indexPrefix) && !index.get(0).isPri()) {
-				this.dropIndex(database, table, index.get(0));
+				this.dropIndex(targetSchema, table, index.get(0));
 			}
 		}
 		for (List<TableIndex> index : diff.entriesOnlyOnLeft().values()) {
@@ -214,9 +227,9 @@ public class TableSyncLogic {
 			String uniq = "";
 			String sql;
 			if (!index.get(0).isNonUnique() && "PRIMARY".equals(index.get(0).getKeyName())) {
-				sql = String.format("alter table %s add primary key (%s);", producer.delimit(database, table), cols);
+				sql = String.format("alter table %s add primary key (%s);", producer.delimit(targetSchema, table), cols);
 			} else {
-				sql = String.format("create %s index %s on %s (%s);", uniq, producer.delimit(indexName), producer.isPg() ? "concurrently" : "" + producer.delimit(database, table), cols);
+				sql = String.format("create %s index %s on %s (%s);", uniq, producer.delimit(indexName), producer.isPg() ? "concurrently" : "" + producer.delimit(targetSchema, table), cols);
 			}
 			try {
 				this.executeDDL(sql);
@@ -298,10 +311,11 @@ public class TableSyncLogic {
 			return false;
 		}
 		DDLMap r = (DDLMap) ddl;
+		String targetSchema = producer.getSchema(r.getDatabase());
 		// truncate
 		if (r.getChange() instanceof ResolvedTableTruncate) {
 			try {
-				this.executeDDL(String.format("truncate %s", producer.delimit(r.getDatabase(), r.getTable())));
+				this.executeDDL(String.format("truncate %s", producer.delimit(targetSchema, r.getTable())));
 			} catch (Throwable e) {
 				LOG.error("truncate error,sql={}", r.getSql(), e);
 			}
@@ -316,7 +330,7 @@ public class TableSyncLogic {
 		if (change.oldTable != null && change.newTable != null && !change.oldTable.name.equals(change.newTable.name)) {
 			String alterSql = "alter table if exists %s rename to %s";
 			try {
-				this.executeDDL(String.format(alterSql, producer.delimit(change.oldTable.getDatabase(), change.oldTable.getName()), producer.delimit(change.newTable.getName())));
+				this.executeDDL(String.format(alterSql, producer.delimit(targetSchema, change.oldTable.getName()), producer.delimit(change.newTable.getName())));
 			} catch (Throwable e) {
 				LOG.error("tableRename error,sql={}", r.getSql(), e);
 			}
@@ -333,12 +347,12 @@ public class TableSyncLogic {
 			for (Object mod : change.columnMods) {
 				if (mod instanceof RenameColumnMod) {
 					RenameColumnMod tmpMod = (RenameColumnMod) mod;
-					this.executeDDL(String.format(alterSql, producer.delimit(r.getDatabase(), r.getTable()), producer.delimit(tmpMod.oldName), producer.delimit(tmpMod.newName)));
+					this.executeDDL(String.format(alterSql, producer.delimit(targetSchema, r.getTable()), producer.delimit(tmpMod.oldName), producer.delimit(tmpMod.newName)));
 					onlyRename = true;
 				} else if (mod instanceof ChangeColumnMod) {
 					ChangeColumnMod tmpMod = (ChangeColumnMod) mod;
 					if (!tmpMod.name.equals(tmpMod.definition.getName())) {
-						this.executeDDL(String.format(alterSql, producer.delimit(r.getDatabase(), r.getTable()), producer.delimit(tmpMod.name), producer.delimit(tmpMod.definition.getName())));
+						this.executeDDL(String.format(alterSql, producer.delimit(targetSchema, r.getTable()), producer.delimit(tmpMod.name), producer.delimit(tmpMod.definition.getName())));
 					}
 				}
 			}

@@ -1,6 +1,8 @@
 package com.zendesk.maxwell.producer.jdbc;
 
 import com.codahale.metrics.MetricRegistry;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mchange.v2.c3p0.ComboPooledDataSource;
 import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.monitoring.BinlogDelayGaugeSet;
@@ -17,11 +19,13 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.jdbc.support.JdbcUtils;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
 
+import java.io.IOException;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -38,8 +42,8 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	private Deque<UpdateSql> sqlList = new ArrayDeque<>();
 	private volatile Long lastUpdate = System.currentTimeMillis();
 	private Set<String> syncDbs;
+	private Map<String, String> syncDbMap;
 	private String type;
-	private Integer delay2AsyncCommitSecond;
 	private Integer batchLimit;
 	private Integer batchTransactionLimit;
 	private Integer sqlMergeSize;
@@ -53,14 +57,17 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	private Integer initDataThreadNum;
 	private boolean initDataDelete;
 	private Position initPosition = null;
+	private ObjectMapper om;
 
-	public JdbcProducer(MaxwellContext context) {
+	public JdbcProducer(MaxwellContext context) throws IOException {
 		super(context);
+		om = new ObjectMapper();
 		context.getConfig().outputConfig.byte2base64 = false;
 		properties = context.getConfig().jdbcProperties;
 		resolvePkConflict = "true".equalsIgnoreCase(properties.getProperty("resolvePkConflict", "true"));
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(properties.getProperty("syncDbs", ""), ",")));
-		delay2AsyncCommitSecond = Integer.parseInt(properties.getProperty("delay2AsyncCommitSecond", "60"));
+		syncDbMap = om.readValue(properties.getProperty("syncDbMap", "{}"), new TypeReference<HashMap<String, String>>() {
+		});
 		initSchemas = "true".equalsIgnoreCase(properties.getProperty("initSchemas"));
 		batchLimit = Integer.parseInt(properties.getProperty("batchLimit", "1000"));
 		batchTransactionLimit = Integer.parseInt(properties.getProperty("batchTransactionLimit", "160000"));
@@ -292,7 +299,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			if ("delete".equals(r.getRowType()) && r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
 				Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
-				String sql = new StringBuilder().append("delete from ").append(delimit(r.getDatabase(), r.getTable())).append(" where ")  //
+				String sql = new StringBuilder().append("delete from ").append(delimit(getSchema(r.getDatabase()), r.getTable())).append(" where ")  //
 					.append(delimit(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
 				List<Object[]> argsList = new ArrayList<>();
 				argsList.add(ids);
@@ -358,13 +365,13 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		// insert into %s.%s(%s) values(%s) on conflict(%s) do nothing
 		if (!isDoris() && resolvePkConflict) {
 			if (isPg()) {
-				sql.append("insert into ").append(delimit(r.getDatabase(), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')') //
+				sql.append("insert into ").append(delimit(getSchema(r.getDatabase()), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')') //
 					.append(" on conflict(").append(delimit(StringUtils.join(keys, delimit(",")))).append(") do nothing");
 			} else {
-				sql.append("insert ignore into ").append(delimit(r.getDatabase(), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')');
+				sql.append("insert ignore into ").append(delimit(getSchema(r.getDatabase()), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')');
 			}
 		} else {
-			sql.append("insert into ").append(delimit(r.getDatabase(), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')');
+			sql.append("insert into ").append(delimit(getSchema(r.getDatabase()), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')');
 		}
 		return new UpdateSql(sql.toString(), args, r);
 	}
@@ -416,7 +423,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		// update "%s"."%s" set %s where %s
-		String table = this.delimit(r.getDatabase(), r.getTable());
+		String table = this.delimit(getSchema(r.getDatabase()), r.getTable());
 		String sql = new StringBuilder().append("update ").append(table).append(" set ").append(sqlK).append(" where ").append(sqlPri).toString();
 		if (sqlWithArgs != null) {
 			sqlWithArgs.delete(sqlWithArgs.length() - 4, sqlWithArgs.length());
@@ -439,7 +446,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		// delete from "%s"."%s" where %s
-		String sql = new StringBuilder().append("delete from ").append(delimit(r.getDatabase(), r.getTable())).append(" where ").append(sqlPri).toString();
+		String sql = new StringBuilder().append("delete from ").append(delimit(getSchema(r.getDatabase()), r.getTable())).append(" where ").append(sqlPri).toString();
 		return new UpdateSql(sql, args, r);
 	}
 
@@ -468,6 +475,15 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		return null;
 	}
 
+	public String getSchema(String schema) {
+		String value = syncDbMap.get(schema);
+		if (value == null || value.trim().isEmpty()) {
+			return schema;
+		} else {
+			return value;
+		}
+	}
+
 	public String getType() {
 		return type;
 	}
@@ -481,7 +497,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	public boolean isDoris() {
-		return "doris".equals(type);
+		return "doris".equals(type) || isStarRocks();
+	}
+
+	public boolean isStarRocks() {
+		return "starrocks".equals(type);
 	}
 
 	public JdbcTemplate getTargetJdbcTemplate() {
@@ -545,7 +565,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						if (initDataLock) {
 							this.executeWithConn(replicationConnection, "unlock tables;");
 						}
-						JdbcUtils.closeConnection(replicationConnection);
+						DataSourceUtils.releaseConnection(replicationConnection, mysqlJdbcTemplate.getDataSource());
 					}
 				} catch (SQLException e) {
 					LOG.error("close error", e);
@@ -604,7 +624,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						if (initDataLock) {
 							this.executeWithConn(replicationConnection, "unlock tables;");
 						}
-						JdbcUtils.closeConnection(replicationConnection);
+						DataSourceUtils.releaseConnection(replicationConnection, mysqlJdbcTemplate.getDataSource());
 						LOG.info("lockTableTime={}", System.currentTimeMillis() - start);
 						transactionStart = true;
 					}
@@ -691,6 +711,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		@Override
 		public Integer extractData(ResultSet rs) throws SQLException, DataAccessException {
 			List<Object[]> argsList = new ArrayList<>();
+			String database = getSchema(this.database);
 			while (rs.next()) {
 				if (rowCount++ == 0) {
 					ResultSetMetaData rsmd = rs.getMetaData();
@@ -703,10 +724,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					if (targetJdbcTemplate.queryForList(String.format("select 1 from %s limit 1", delimit(database, table)), Integer.class).size() > 0) {
 						if (initDataDelete) {
 							try {
-								targetExecute("truncate " + delimit(database, table));
+								targetExecute("truncate table " + delimit(database, table));
 							} catch (Exception e) {
 								LOG.info("truncate fail,change to delete... {}", e.getMessage());
-								targetExecute("delete from " + delimit(database, table));
+								targetExecute("delete from " + delimit(database, table) + " where 1=1");
 							}
 						} else {
 							throw new IllegalArgumentException(String.format("init data fail,target table not empty:%s.%s", database, table));
@@ -718,14 +739,14 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					Object value = JdbcUtils.getResultSetValue(rs, i + 1);
 					if (value instanceof Boolean) {
 						value = (Boolean) value ? 1 : 0;
-					} else if (value instanceof String) {
+					} else if (isPg() && value instanceof String) {
 						// fix ERROR: invalid byte sequence for encoding "UTF8": 0x00
 						value = ((String) value).replaceAll("\u0000", "");
 					}
 					args[i] = value;
 				}
 				argsList.add(args);
-				if (argsList.size() >= batchLimit) {
+				if (argsList.size() >= batchLimit || (argsList.size() + 1) * columnCount >= 65536 / 2) {
 					this.asyncBatchInsert(insertSql, argsList);
 					argsList = new ArrayList<>();
 				}

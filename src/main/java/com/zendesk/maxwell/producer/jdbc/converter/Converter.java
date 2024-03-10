@@ -8,6 +8,8 @@ public interface Converter {
 			return new PgConverter(source);
 		} else if ("doris".equals(type)) {
 			return new DorisConverter(source);
+		} else if ("starrocks".equals(type)) {
+			return new DorisConverter(source);
 		} else if ("mysql".equals(type)) {
 			return new MysqlConverter(source);
 		}

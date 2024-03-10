@@ -59,19 +59,19 @@ public class DorisConverter implements Converter {
 	private String typeGet(String dataType) {
 		String type = source.getColumnType();
 		if (source.getColumnType().endsWith("unsigned") || source.getColumnType().contains(" unsigned ")) {
-			if (source.getDataType().equalsIgnoreCase("tinyint")) {
+			if (source.getDataType().equals("tinyint")) {
 				type = "smallint";
-			} else if (source.getDataType().equalsIgnoreCase("mediumint")) {
+			} else if (source.getDataType().equals("mediumint")) {
 				type = "int";
-			} else if (source.getDataType().equalsIgnoreCase("int")) {
+			} else if (source.getDataType().equals("int")) {
 				type = "bigint";
-			} else if (source.getDataType().equalsIgnoreCase("bigint")) {
+			} else if (source.getDataType().equals("bigint")) {
 				if (!source.isPri()) {
 					type = "largeint";
 				} else {
 					type = "bigint";
 				}
-			} else if (source.getDataType().equalsIgnoreCase("decimal")) {
+			} else if (source.getDataType().equals("decimal")) {
 				type = source.getColumnType().replace("unsigned", "");
 			} else {
 				type = source.getDataType();

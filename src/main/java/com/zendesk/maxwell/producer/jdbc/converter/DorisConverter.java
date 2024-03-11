@@ -80,9 +80,9 @@ public class DorisConverter implements Converter {
 		if (source.getDataType().endsWith("text") //
 			|| source.getDataType().endsWith("blob") //
 			|| source.getDataType().endsWith("binary") //
-			|| source.getDataType().endsWith("enum") //
-			|| source.getDataType().endsWith("set") //
-			|| source.getDataType().endsWith("time") //
+			|| source.getDataType().equals("enum") //
+			|| source.getDataType().equals("set") //
+			|| source.getDataType().equals("time") //
 			|| (source.getDataType().contains("char") && !source.isPri())) {
 			type = "string";
 		}

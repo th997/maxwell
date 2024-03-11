@@ -628,7 +628,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						LOG.info("lockTableTime={}", System.currentTimeMillis() - start);
 						transactionStart = true;
 					}
-					tableSyncLogic.syncTable(database, table, false);
+					if (!tableSyncLogic.syncTable(database, table, false)) {
+						LOG.warn("primary key not found: %s.%s", database, table);
+						continue;
+					}
 					insertCount += this.initTableData(database, table, executor);
 					tableSyncLogic.syncIndex(database, table);
 				}

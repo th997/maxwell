@@ -30,7 +30,7 @@ public class DorisConverter implements Converter {
 	@Override
 	public boolean isSameNullAble(TableColumn c) {
 		String type = this.typeGet(source.getDataType());
-		return Objects.equals(source.isNullAble(), c.isNullAble()) || (type.contains("timestamp") && c.isNullAble());
+		return Objects.equals(source.isNullAble(), c.isNullAble()) || (type.contains("timestamp") || type.contains("datetime") && c.isNullAble());
 	}
 
 	@Override
@@ -76,26 +76,31 @@ public class DorisConverter implements Converter {
 			} else {
 				type = source.getDataType();
 			}
-		}
-		if (source.getDataType().endsWith("text") //
-			|| source.getDataType().endsWith("blob") //
-			|| source.getDataType().endsWith("binary") //
-			|| source.getDataType().equals("enum") //
+		} else if (source.getDataType().equals("enum") //
 			|| source.getDataType().equals("set") //
 			|| source.getDataType().equals("time") //
-			|| (source.getDataType().contains("char") && !source.isPri())) {
-			type = "string";
-		}
-		if (source.getDataType().equals("double") || source.getDataType().equals("float")) {
+			|| source.getDataType().equals("text") //
+			|| source.getDataType().endsWith("char")) {
+			if (source.getStrLen() != null) {
+				if (source.getStrLen() * 3 < 65533) {
+					type = "varchar(" + source.getStrLen() * 3 + ")";
+				} else {
+					type = "varbinary";
+				}
+			} else {
+				type = "string";
+			}
+		} else if (source.getDataType().endsWith("text") //
+			|| source.getDataType().endsWith("blob") //
+			|| source.getDataType().endsWith("binary")) {
+			type = "varbinary";
+		} else if (source.getDataType().equals("double") || source.getDataType().equals("float")) {
 			type = source.getDataType();
-		}
-		if (source.getDataType().equals("timestamp")) {
+		} else if (source.getDataType().equals("timestamp")) {
 			type = "datetime";
-		}
-		if (source.getDataType().equals("bit")) {
+		} else if (source.getDataType().equals("bit")) {
 			type = "bigint";
-		}
-		if (source.getDataType().equals("year")) {
+		} else if (source.getDataType().equals("year")) {
 			type = "smallint";
 		}
 		if (type.contains("unsigned")) {
@@ -110,7 +115,7 @@ public class DorisConverter implements Converter {
 	}
 
 	public String toColNullAble() {
-		if (source.isNullAble()) {
+		if (source.isNullAble() || "timestamp".equals(source.getDataType()) || "datetime".equals(source.getDataType())) {
 			return "null ";
 		} else {
 			return "not null ";

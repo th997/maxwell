@@ -41,6 +41,10 @@ public class MysqlConverter implements Converter {
 
 	@Override
 	public String toTargetCol() {
+		return toTargetCol(null);
+	}
+	@Override
+	public String toTargetCol(TableColumn target) {
 		StringBuilder tempSql = new StringBuilder("`" + source.getColumnName() + "` ");
 		tempSql.append(this.toColType());
 		tempSql.append(this.toColNullAble());

@@ -49,6 +49,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	private Integer sqlMergeSize;
 	private Integer maxPoolSize;
 	private Integer syncIndexMinute;
+	public final Integer sqlArgsLimit;
+	public final Integer replicationNum;
+	public final Integer bucketNum;
 	private boolean initSchemas;
 	private boolean resolvePkConflict;
 	// init data
@@ -74,6 +77,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		sqlMergeSize = Integer.parseInt(properties.getProperty("sqlMergeSize", "5"));
 		maxPoolSize = Integer.parseInt(properties.getProperty("maxPoolSize", "10"));
 		syncIndexMinute = Integer.parseInt(properties.getProperty("syncIndexMinute", "600"));
+		sqlArgsLimit = Integer.parseInt(properties.getProperty("sqlArgsLimit", "65536"));
+		replicationNum = Integer.parseInt(properties.getProperty("replicationNum", "1"));
+		bucketNum = Integer.parseInt(properties.getProperty("bucketNum", "1"));
 		// init data
 		initData = "true".equalsIgnoreCase(properties.getProperty("initData"));
 		initDataLock = "true".equalsIgnoreCase(properties.getProperty("initDataLock", "true"));
@@ -749,7 +755,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					args[i] = value;
 				}
 				argsList.add(args);
-				if (argsList.size() >= batchLimit || (argsList.size() + 1) * columnCount >= 65536 / 2) {
+				if (argsList.size() >= batchLimit || (!isMysql() && (argsList.size() + 1) * columnCount >= sqlArgsLimit)) {
 					this.asyncBatchInsert(insertSql, argsList);
 					argsList = new ArrayList<>();
 				}

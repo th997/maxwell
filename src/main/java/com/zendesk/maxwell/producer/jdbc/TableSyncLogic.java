@@ -107,7 +107,7 @@ public class TableSyncLogic {
 			for (Map.Entry<String, TableColumn> e : diff.entriesOnlyOnLeft().entrySet()) {
 				Converter converter = Converter.getConverter(e.getValue(), producer.getType());
 				e.getValue().setNullAble(true);
-				sql.append((producer.isDoris() ? "add column " : "add ") + converter.toTargetCol() + ",");
+				sql.append("add column " + converter.toTargetCol() + ",");
 				if (producer.isPg() && StringUtils.isNotEmpty(e.getValue().getColumnComment())) {
 					commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, targetSchema, table, e.getValue().getColumnName(), StringEscapeUtils.escapeSql(e.getValue().getColumnComment())));
 				}
@@ -138,7 +138,7 @@ public class TableSyncLogic {
 							commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, targetSchema, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));
 						}
 					} else if (producer.isDoris()) {
-						this.executeDDL(String.format("alter table %s modify column %s", fullTableName, converter.toTargetCol()));
+						this.executeDDL(String.format("alter table %s modify column %s", fullTableName, converter.toTargetCol(target)));
 					} else {
 						this.executeDDL(String.format("alter table %s change %s %s", fullTableName, columnName, converter.toTargetCol()));
 					}
@@ -160,7 +160,14 @@ public class TableSyncLogic {
 	}
 
 	private String getDorisDesc(List<TableColumn> mysqlFields) {
-		String key = mysqlFields.stream().filter(TableColumn::isPri).map(TableColumn::getColumnName).collect(Collectors.joining("`,`"));
+		List<TableColumn> priKeys = mysqlFields.stream().filter(TableColumn::isPri).collect(Collectors.toList());
+		Optional<TableColumn> first = priKeys.stream().filter(TableColumn::isAutoIncrement).findFirst();
+		String key;
+		if (first.isPresent()) {
+			key = first.get().getColumnName();
+		} else {
+			key = priKeys.stream().map(TableColumn::getColumnName).collect(Collectors.joining("`,`"));
+		}
 		key = "`" + key + "`";
 		StringBuilder sb = new StringBuilder();
 		if (producer.isStarRocks()) {
@@ -168,17 +175,19 @@ public class TableSyncLogic {
 		} else {
 			sb.append(String.format("\nunique key(%s)\n", key));
 		}
-		sb.append(String.format("distributed by hash(%s) buckets 1\n", key));
+		sb.append(String.format("distributed by hash(%s) buckets %s\n", key, producer.bucketNum));
+		// properties
+		sb.append("properties (\n");
+		String kv = "\"%s\" = \"%s\",\n";
+		sb.append(String.format(kv, "replication_num", producer.replicationNum));
 		if (!producer.isStarRocks()) {
-			sb.append("properties (\n");
-			String kv = "\"%s\" = \"%s\",\n";
 			sb.append(String.format(kv, "replication_allocation", "tag.location.default: 1"));
 			sb.append(String.format(kv, "enable_unique_key_merge_on_write", "true"));
-//			sb.append(String.format(kv, "light_schema_change", "true"));
-//			sb.append(String.format(kv, "store_row_column", "true"));
-			sb.deleteCharAt(sb.length() - 2);
-			sb.append(")");
+			// sb.append(String.format(kv, "light_schema_change", "true"));
+			// sb.append(String.format(kv, "store_row_column", "true"));
 		}
+		sb.deleteCharAt(sb.length() - 2);
+		sb.append(")");
 		return sb.toString();
 	}
 
@@ -329,6 +338,9 @@ public class TableSyncLogic {
 		// alter table xx rename to xx;
 		if (change.oldTable != null && change.newTable != null && !change.oldTable.name.equals(change.newTable.name)) {
 			String alterSql = "alter table if exists %s rename to %s";
+			if (producer.isDoris()) {
+				alterSql = "alter table %s rename %s";
+			}
 			try {
 				this.executeDDL(String.format(alterSql, producer.delimit(targetSchema, change.oldTable.getName()), producer.delimit(change.newTable.getName())));
 			} catch (Throwable e) {

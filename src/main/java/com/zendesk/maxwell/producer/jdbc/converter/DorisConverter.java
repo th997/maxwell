@@ -23,7 +23,7 @@ public class DorisConverter implements Converter {
 	public boolean isSameType(TableColumn c) {
 		return Objects.equals(source.getColumnName(), c.getColumnName())//
 			&& (Objects.equals(source.getDataType(), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getColumnType()))//
-			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null || c.getColumnType().equalsIgnoreCase("string"))//
+			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null || c.getColumnType().equalsIgnoreCase("string") || source.getStrLen() * 3 <= c.getStrLen())//
 			&& (Objects.equals(source.getNumericPrecision(), c.getNumericPrecision()) && Objects.equals(source.getNumericScale(), c.getNumericScale()) || !"decimal".equals(source.getDataType()));
 	}
 
@@ -40,9 +40,13 @@ public class DorisConverter implements Converter {
 
 	@Override
 	public String toTargetCol() {
+		return toTargetCol(null);
+	}
+
+	public String toTargetCol(TableColumn target) {
 		StringBuilder tempSql = new StringBuilder("`" + source.getColumnName() + "` ");
 		tempSql.append(this.toColType());
-		tempSql.append(this.toColNullAble());
+		tempSql.append(this.toColNullAble(target));
 		tempSql.append(this.toColDefault());
 		if (StringUtils.isNotEmpty(source.getColumnComment())) {
 			tempSql.append(String.format(" comment '%s'", StringEscapeUtils.escapeSql(source.getColumnComment())));
@@ -65,12 +69,6 @@ public class DorisConverter implements Converter {
 				type = "int";
 			} else if (source.getDataType().equals("int")) {
 				type = "bigint";
-			} else if (source.getDataType().equals("bigint")) {
-				if (!source.isPri()) {
-					type = "largeint";
-				} else {
-					type = "bigint";
-				}
 			} else if (source.getDataType().equals("decimal")) {
 				type = source.getColumnType().replace("unsigned", "");
 			} else {
@@ -79,19 +77,18 @@ public class DorisConverter implements Converter {
 		} else if (source.getDataType().equals("enum") //
 			|| source.getDataType().equals("set") //
 			|| source.getDataType().equals("time") //
-			|| source.getDataType().equals("text") //
+			|| source.getDataType().endsWith("text") //
 			|| source.getDataType().endsWith("char")) {
 			if (source.getStrLen() != null) {
-				if (source.getStrLen() * 3 < 65533) {
+				if (source.isPri()) {
+					type = "varchar(" + source.getStrLen() + ")";
+				} else if (source.getStrLen() * 3 <= 1048576) {
 					type = "varchar(" + source.getStrLen() * 3 + ")";
 				} else {
-					type = "varbinary";
+					type = "varchar(1048576)";
 				}
-			} else {
-				type = "string";
 			}
-		} else if (source.getDataType().endsWith("text") //
-			|| source.getDataType().endsWith("blob") //
+		} else if (source.getDataType().endsWith("blob") //
 			|| source.getDataType().endsWith("binary")) {
 			type = "varbinary";
 		} else if (source.getDataType().equals("double") || source.getDataType().equals("float")) {
@@ -102,6 +99,8 @@ public class DorisConverter implements Converter {
 			type = "bigint";
 		} else if (source.getDataType().equals("year")) {
 			type = "smallint";
+		} else if (source.getDataType().equals("mediumint")) {
+			type = "int";
 		}
 		if (type.contains("unsigned")) {
 			System.out.println(source);
@@ -114,8 +113,8 @@ public class DorisConverter implements Converter {
 		return typeGet() + " ";
 	}
 
-	public String toColNullAble() {
-		if (source.isNullAble() || "timestamp".equals(source.getDataType()) || "datetime".equals(source.getDataType())) {
+	public String toColNullAble(TableColumn target) {
+		if (source.isNullAble() || "timestamp".equals(source.getDataType()) || "datetime".equals(source.getDataType()) || (target != null && target.isNullAble())) {
 			return "null ";
 		} else {
 			return "not null ";

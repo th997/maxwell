@@ -19,13 +19,14 @@ public interface Converter {
 	// compare column if is same
 	boolean isEqualsTargetCol(TableColumn c);
 
-	boolean isSameType(TableColumn c);
+	boolean isSameType(TableColumn target);
 
-	boolean isSameNullAble(TableColumn c);
+	boolean isSameNullAble(TableColumn target);
 
-	boolean isSameDefault(TableColumn c);
+	boolean isSameDefault(TableColumn target);
 
 	String toTargetCol();
+	String toTargetCol(TableColumn target);
 
 	String typeGet();
 

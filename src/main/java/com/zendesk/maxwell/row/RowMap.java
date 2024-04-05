@@ -59,6 +59,7 @@ public class RowMap implements Serializable {
 	private RowIdentity rowIdentity;
 
 	private long approximateSize;
+	private Object bindObject;
 	
 	public RowMap(String type, String database, String table, Long timestampMillis, List<String> pkColumns,
 			Position position, Position nextPosition, String rowQuery) {
@@ -469,5 +470,13 @@ public class RowMap implements Serializable {
 		return pkColumns.stream()
 				.filter(v -> this.data.get(v) != null)
 				.collect(Collectors.toMap(k -> k, v -> this.data.get(v)));
+	}
+
+	public Object getBindObject() {
+		return bindObject;
+	}
+
+	public void setBindObject(Object bindObject) {
+		this.bindObject = bindObject;
 	}
 }

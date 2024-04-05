@@ -21,6 +21,7 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.jdbc.support.JdbcUtils;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.DefaultTransactionDefinition;
@@ -39,8 +40,8 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	private DataSourceTransactionManager targetTransactionManager;
 	private DataSourceTransactionManager mysqlTransactionManager;
 	private TableSyncLogic tableSyncLogic;
-	private Deque<UpdateSql> sqlList = new ArrayDeque<>();
-	private volatile Long lastUpdate = System.currentTimeMillis();
+	private ConcurrentMap<Thread, Deque<UpdateSql>> sqlListMap = new ConcurrentHashMap();
+	private ConcurrentMap<Thread, Long> lastUpdateMap = new ConcurrentHashMap();
 	private Set<String> syncDbs;
 	private Map<String, String> syncDbMap;
 	private String type;
@@ -49,6 +50,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	private Integer sqlMergeSize;
 	private Integer maxPoolSize;
 	private Integer syncIndexMinute;
+	private final Integer heartbeatSecond;
 	public final Integer sqlArgsLimit;
 	public final Integer replicationNum;
 	public final Integer bucketNum;
@@ -80,6 +82,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		sqlArgsLimit = Integer.parseInt(properties.getProperty("sqlArgsLimit", "65536"));
 		replicationNum = Integer.parseInt(properties.getProperty("replicationNum", "1"));
 		bucketNum = Integer.parseInt(properties.getProperty("bucketNum", "1"));
+		heartbeatSecond = Integer.parseInt(properties.getProperty("heartbeatSecond", "10"));
 		// init data
 		initData = "true".equalsIgnoreCase(properties.getProperty("initData"));
 		initDataLock = "true".equalsIgnoreCase(properties.getProperty("initDataLock", "true"));
@@ -116,35 +119,35 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		}
 		if (initSchemas) {
 			this.initSchemas(syncDbs, initData);
+			if (initData) {
+				LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", initPosition);
+				if (initPosition != null) {
+					try {
+						context.getPositionStore().set(initPosition);
+					} catch (Exception e) {
+						LOG.error("init error", e);
+					}
+				}
+				System.exit(0);
+			}
 		}
 		if (syncIndexMinute > 0) {
 			this.startSyncIndexTask(syncIndexMinute);
 		}
+		this.startHeartbeatTask();
 		context.getMetrics().register(MetricRegistry.name(context.getConfig().metricsPrefix), new BinlogDelayGaugeSet(context));
-
 	}
+
 
 	@Override
 	public void push(RowMap r) throws Exception {
-		if (initData) {
-			synchronized (this) {
-				if (initPosition != null) {
-					context.setPosition(initPosition);
-				}
-				LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", context.getPosition());
-				System.exit(0);
-			}
-		}
-		this.doPush(r);
-	}
-
-	private synchronized void doPush(RowMap r) {
+		Deque<UpdateSql> sqlList = this.getSqlList();
 		if (sqlList.isEmpty() && r instanceof HeartbeatRowMap) {
-			this.context.setPosition(r);
+			this.setPosition(r);
 			return;
 		}
 		Long now = System.currentTimeMillis();
-		if (now - lastUpdate > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
+		if (now - getLastUpdate() > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
 			this.batchUpdate(sqlList);
 		}
 		if (!syncDbs.contains(r.getDatabase())) {
@@ -175,7 +178,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					if (!tableSyncLogic.specialDDL(r)) {
 						tableSyncLogic.syncTable(r.getDatabase(), r.getTable());
 					}
-					this.context.setPosition(r);
+					this.setPosition(r);
 				} else {
 					LOG.warn("unrecognizable ddl:{}", toJSON(r));
 				}
@@ -200,12 +203,63 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		}
 	}
 
+	private void setPosition(RowMap r) {
+		if (r.getNextPosition() != null) {
+			this.context.setPosition(r);
+		} else if (r.getBindObject() instanceof Acknowledgment) {
+			((Acknowledgment) r.getBindObject()).acknowledge();
+		}
+	}
+
+	private Long getLastUpdate() {
+		Thread thread = Thread.currentThread();
+		Long lastUpdate = lastUpdateMap.get(thread);
+		if (lastUpdate == null) {
+			lastUpdate = System.currentTimeMillis();
+			lastUpdateMap.put(thread, lastUpdate);
+		}
+		return lastUpdate;
+	}
+
+	private Long setLastUpdate(Thread thread) {
+		Long lastUpdate = System.currentTimeMillis();
+		lastUpdateMap.put(thread, lastUpdate);
+		return lastUpdate;
+	}
+
+	private Deque<UpdateSql> getSqlList() {
+		Thread thread = Thread.currentThread();
+		return getSqlList(thread);
+	}
+
+	private Deque<UpdateSql> getSqlList(Thread thread) {
+		Deque<UpdateSql> sqlList = sqlListMap.get(thread);
+		if (sqlList == null) {
+			sqlList = new ArrayDeque<>();
+			sqlListMap.put(thread, sqlList);
+		}
+		return sqlList;
+	}
+
 	private void addSql(UpdateSql sql) {
-		sqlList.add(sql);
+		this.getSqlList().add(sql);
 	}
 
 	private void batchUpdate(Deque<UpdateSql> sqlList) {
-		lastUpdate = System.currentTimeMillis();
+		this.batchUpdate(sqlList, Thread.currentThread());
+	}
+
+	private void batchUpdate(Deque<UpdateSql> sqlList, Thread thread) {
+		synchronized (thread) {
+			if (sqlList == null) {
+				sqlList = getSqlList(thread);
+			}
+			this.doBatchUpdate(sqlList, thread);
+		}
+	}
+
+	private void doBatchUpdate(Deque<UpdateSql> sqlList, Thread thread) {
+		Long lastUpdate = this.setLastUpdate(thread);
 		if (sqlList.isEmpty()) {
 			return;
 		}
@@ -218,7 +272,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				this.batchUpdateGroup(group);
 			}
 			targetTransactionManager.commit(status);
-			this.context.setPosition(rowMap);
+			this.setPosition(rowMap);
 			LOG.info("batchUpdate size={},mergeSize={},time={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate);
 			sqlList.clear();
 		} catch (Exception e) {
@@ -238,7 +292,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						}
 					}
 				}
-				this.context.setPosition(rowMap);
+				this.setPosition(rowMap);
 				sqlList.clear();
 			} else if (this.isMsgException(e, "duplicate key value")) {
 				Iterator<UpdateSql> it = sqlList.iterator();
@@ -252,7 +306,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						}
 						LOG.warn("duplicate key={}", toJSON(sql.getRowMap()));
 					}
-					this.context.setPosition(sql.getRowMap());
+					this.setPosition(sql.getRowMap());
 					it.remove();
 				}
 			} else {
@@ -529,11 +583,32 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		if (targetDs != null) {
 			targetDs.close();
 		}
+		this.flushQueue(0L);
 	}
 
 	@Override
 	public void awaitStop(Long timeout) throws TimeoutException {
 
+	}
+
+	private void startHeartbeatTask() {
+		Timer timer = new Timer();
+		Long heartbeatInterval = heartbeatSecond * 1000L;
+		timer.schedule(new TimerTask() {
+			@Override
+			public void run() {
+				flushQueue(heartbeatInterval);
+			}
+		}, heartbeatInterval, heartbeatInterval);
+	}
+
+	private void flushQueue(Long heartbeatInterval) {
+		Long now = System.currentTimeMillis();
+		for (Map.Entry<Thread, Long> entry : lastUpdateMap.entrySet()) {
+			if (now - entry.getValue() > heartbeatInterval) {
+				batchUpdate(null, entry.getKey());
+			}
+		}
 	}
 
 	private void startSyncIndexTask(long syncIndexMinute) {

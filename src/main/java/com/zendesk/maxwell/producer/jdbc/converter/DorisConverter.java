@@ -87,6 +87,8 @@ public class DorisConverter implements Converter {
 				} else {
 					type = "varchar(1048576)";
 				}
+			} else {
+				type = "string";
 			}
 		} else if (source.getDataType().endsWith("blob") //
 			|| source.getDataType().endsWith("binary")) {

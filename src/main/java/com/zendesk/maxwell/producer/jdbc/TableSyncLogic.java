@@ -176,6 +176,7 @@ public class TableSyncLogic {
 			sb.append(String.format("\nunique key(%s)\n", key));
 		}
 		sb.append(String.format("distributed by hash(%s) buckets %s\n", key, producer.bucketNum));
+		sb.append(String.format("order by(%s)\n", key));
 		// properties
 		sb.append("properties (\n");
 		String kv = "\"%s\" = \"%s\",\n";

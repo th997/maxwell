@@ -8,6 +8,7 @@ import com.zendesk.maxwell.filtering.Filter;
 import com.zendesk.maxwell.monitoring.*;
 import com.zendesk.maxwell.producer.*;
 import com.zendesk.maxwell.producer.es.ESProducer;
+import com.zendesk.maxwell.producer.jdbc.JdbcAsyncConsumer;
 import com.zendesk.maxwell.producer.jdbc.JdbcProducer;
 import com.zendesk.maxwell.recovery.RecoveryInfo;
 import com.zendesk.maxwell.replication.*;
@@ -562,6 +563,11 @@ public class MaxwellContext {
 				break;
 			case "jdbc":
 				this.producer = new JdbcProducer(this);
+				break;
+			case "async_jdbc":
+				JdbcAsyncConsumer jdbcAsyncConsumer = new JdbcAsyncConsumer(this);
+				addTask(jdbcAsyncConsumer);
+				this.producer = new MaxwellKafkaProducer(this, this.config.getKafkaProperties(), this.config.kafkaTopic);
 				break;
 			case "elasticsearch":
 				this.producer = new ESProducer(this);

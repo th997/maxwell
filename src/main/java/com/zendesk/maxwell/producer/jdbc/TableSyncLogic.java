@@ -157,7 +157,9 @@ public class TableSyncLogic {
 		}
 		if (producer.isDoris()) {
 			while (true) {
-				List<Map<String, Object>> list = producer.getTargetJdbcTemplate().queryForList(String.format("show alter table column from %s", database));
+				String sql = String.format("show alter table column from %s order by createtime desc limit 100", database);
+				List<Map<String, Object>> list = producer.getTargetJdbcTemplate().queryForList(sql);
+				list = list.stream().filter(map -> !"FINISHED".equals(map.get("State"))).collect(Collectors.toList());
 				if (list.isEmpty()) {
 					break;
 				}

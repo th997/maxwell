@@ -266,18 +266,22 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		UpdateSql updateSql = sqlList.getLast();
 		RowMap rowMap = updateSql.getRowMap();
 		Deque<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
-		TransactionStatus status = targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
+		TransactionStatus status = isDoris() ? null : targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
 			for (UpdateSqlGroup group : groupList) {
 				this.batchUpdateGroup(group);
 			}
-			targetTransactionManager.commit(status);
+			if (!isDoris()) {
+				targetTransactionManager.commit(status);
+			}
 			this.setPosition(rowMap);
 			LOG.info("batchUpdate size={},mergeSize={},time={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate);
 			sqlList.clear();
 		} catch (Exception e) {
 			LOG.info("batchUpdate fail size={},mergeSize={},time={}", sqlList.size(), groupList.size(), System.currentTimeMillis() - lastUpdate);
-			targetTransactionManager.rollback(status);
+			if (!isDoris()) {
+				targetTransactionManager.rollback(status);
+			}
 			if (this.isMsgException(e, "does not exist")) {
 				for (UpdateSqlGroup group : groupList) {
 					try {
@@ -776,18 +780,22 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		private void asyncBatchInsert(final String sql, final List<Object[]> argsList) {
 			executor.execute(() -> {
 				long start = System.currentTimeMillis();
-				TransactionStatus statusPg = targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
+				TransactionStatus status = isDoris() ? null : targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
 				try {
 					if (isPg()) {
 						targetJdbcTemplate.execute("set local synchronous_commit = off");
 					}
 					targetJdbcTemplate.batchUpdate(sql, argsList);
 				} catch (Exception e) {
-					targetTransactionManager.rollback(statusPg);
+					if (!isDoris()) {
+						targetTransactionManager.rollback(status);
+					}
 					LOG.error("batchUpdate error,sql={},args={}", sql, argsList.get(0), e);
 					throw e;
 				}
-				targetTransactionManager.commit(statusPg);
+				if (!isDoris()) {
+					targetTransactionManager.commit(status);
+				}
 				LOG.info("batch init insert,size={},time={},sql={}", argsList.size(), System.currentTimeMillis() - start, sql);
 			});
 		}

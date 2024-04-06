@@ -281,6 +281,9 @@ public class TableSyncLogic {
 		}
 		LOG.info("executeDDL:" + sql);
 		producer.getTargetJdbcTemplate().execute(sql);
+		if (database != null) {
+			this.waitDorisAltering(database);
+		}
 	}
 
 	public List<String> getMysqlTables(String tableSchema) {

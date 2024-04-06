@@ -155,6 +155,19 @@ public class TableSyncLogic {
 				executorService.submit(() -> syncIndex(database, table));
 			}
 		}
+		if (producer.isDoris()) {
+			while (true) {
+				List<Map<String, Object>> list = producer.getTargetJdbcTemplate().queryForList(String.format("show alter table column from %s", database));
+				if (list.isEmpty()) {
+					break;
+				}
+				LOG.warn("table alter is running:{}", list.get(0));
+				try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e) {
+				}
+			}
+		}
 		LOG.info("syncTable end:{}.{}", database, table);
 		return true;
 	}

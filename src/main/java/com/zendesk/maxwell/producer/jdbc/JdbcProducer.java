@@ -3,6 +3,7 @@ package com.zendesk.maxwell.producer.jdbc;
 import com.codahale.metrics.MetricRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.mchange.v2.c3p0.ComboPooledDataSource;
 import com.zendesk.maxwell.MaxwellContext;
 import com.zendesk.maxwell.monitoring.BinlogDelayGaugeSet;
@@ -28,46 +29,49 @@ import org.springframework.transaction.support.DefaultTransactionDefinition;
 
 import java.io.IOException;
 import java.sql.*;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
 
 public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	protected final Logger LOG = LoggerFactory.getLogger(getClass());
-	private Properties properties;
-	private ComboPooledDataSource targetDs;
-	private JdbcTemplate targetJdbcTemplate;
-	private JdbcTemplate mysqlJdbcTemplate;
-	private DataSourceTransactionManager targetTransactionManager;
-	private DataSourceTransactionManager mysqlTransactionManager;
-	private TableSyncLogic tableSyncLogic;
-	private ConcurrentMap<Thread, Deque<UpdateSql>> sqlListMap = new ConcurrentHashMap();
-	private ConcurrentMap<Thread, Long> lastUpdateMap = new ConcurrentHashMap();
-	private Set<String> syncDbs;
-	private Map<String, String> syncDbMap;
-	private String type;
-	private Integer batchLimit;
-	private Integer batchTransactionLimit;
-	private Integer sqlMergeSize;
-	private Integer maxPoolSize;
-	private Integer syncIndexMinute;
-	private final Integer heartbeatSecond;
-	public final Integer sqlArgsLimit;
-	public final Integer replicationNum;
-	public final Integer bucketNum;
-	private boolean initSchemas;
-	private boolean resolvePkConflict;
+	final Properties properties;
+	final ComboPooledDataSource targetDs;
+	final JdbcTemplate targetJdbcTemplate;
+	final JdbcTemplate mysqlJdbcTemplate;
+	final DataSourceTransactionManager targetTransactionManager;
+	final DataSourceTransactionManager mysqlTransactionManager;
+	final TableSyncLogic tableSyncLogic;
+	DorisLogic dorisLogic;
+	final ConcurrentMap<Thread, Deque<UpdateSql>> sqlListMap = new ConcurrentHashMap();
+	final ConcurrentMap<Thread, Long> lastUpdateMap = new ConcurrentHashMap();
+	final Set<String> syncDbs;
+	final Map<String, String> syncDbMap;
+	String type;
+	final Integer batchLimit;
+	final Integer batchTransactionLimit;
+	final Integer sqlMergeSize;
+	Integer maxPoolSize;
+	final Integer syncIndexMinute;
+	final Integer heartbeatSecond;
+	final Integer sqlArgsLimit;
+	final Integer replicationNum;
+	final Integer bucketNum;
+	final boolean initSchemas;
+	final boolean resolvePkConflict;
 	// init data
-	private boolean initData;
-	private boolean initDataLock;
-	private Integer initDataThreadNum;
-	private boolean initDataDelete;
-	private Position initPosition = null;
-	private ObjectMapper om;
+	final boolean initData;
+	final boolean initDataLock;
+	final Integer initDataThreadNum;
+	final boolean initDataDelete;
+	final ObjectMapper om;
+	Position initPosition = null;
 
 	public JdbcProducer(MaxwellContext context) throws IOException {
 		super(context);
 		om = new ObjectMapper();
-		context.getConfig().outputConfig.byte2base64 = false;
+		om.registerModule(new JavaTimeModule());
+		om.setDateFormat(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
 		properties = context.getConfig().jdbcProperties;
 		resolvePkConflict = "true".equalsIgnoreCase(properties.getProperty("resolvePkConflict", "true"));
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(properties.getProperty("syncDbs", ""), ",")));
@@ -96,6 +100,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		if (StringUtils.isEmpty(type)) {
 			type = StringUtils.split(url, ":")[1].toLowerCase();
 		}
+		context.getConfig().outputConfig.byte2base64 = isDoris();
 		targetDs = new ComboPooledDataSource();
 		targetDs.setJdbcUrl(url);
 		targetDs.setUser(properties.getProperty("user"));
@@ -113,10 +118,19 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		targetTransactionManager = new DataSourceTransactionManager(targetDs);
 		mysqlTransactionManager = new DataSourceTransactionManager(sourcePool.getCpds());
 		tableSyncLogic = new TableSyncLogic(this);
+		if (isDoris()) {
+			dorisLogic = new DorisLogic(this);
+		}
 		if (syncDbs.size() == 1 && syncDbs.contains("all")) {
 			syncDbs.clear();
 			syncDbs.addAll(tableSyncLogic.getDbs());
 		}
+		if (!context.getConfig().producerType.equals("async_jdbc")) {
+			start();
+		}
+	}
+
+	public void start() {
 		if (initSchemas) {
 			this.initSchemas(syncDbs, initData);
 			if (initData) {
@@ -137,7 +151,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		this.startHeartbeatTask();
 		context.getMetrics().register(MetricRegistry.name(context.getConfig().metricsPrefix), new BinlogDelayGaugeSet(context));
 	}
-
 
 	@Override
 	public void push(RowMap r) throws Exception {
@@ -588,6 +601,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			targetDs.close();
 		}
 		this.flushQueue(0L);
+		if (dorisLogic != null) {
+			dorisLogic.stop();
+		}
 	}
 
 	@Override
@@ -714,7 +730,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						transactionStart = true;
 					}
 					if (!tableSyncLogic.syncTable(database, table, false)) {
-						LOG.warn("primary key not found: %s.%s", database, table);
+						LOG.warn("primary key not found: {}.{}", database, table);
 						continue;
 					}
 					insertCount += this.initTableData(database, table, executor);
@@ -777,31 +793,43 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			this.executor = executor;
 		}
 
-		private void asyncBatchInsert(final String sql, final List<Object[]> argsList) {
+		private void asyncBatchInsert(final List<Object[]> argsList) {
 			executor.execute(() -> {
 				long start = System.currentTimeMillis();
-				TransactionStatus status = isDoris() ? null : targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
-				try {
-					if (isPg()) {
-						targetJdbcTemplate.execute("set local synchronous_commit = off");
-					}
-					targetJdbcTemplate.batchUpdate(sql, argsList);
-				} catch (Exception e) {
-					if (!isDoris()) {
-						targetTransactionManager.rollback(status);
-					}
-					LOG.error("batchUpdate error,sql={},args={}", sql, argsList.get(0), e);
-					throw e;
+				if (isDoris()) {
+					dorisLogic.streamLoad(getSchema(database), table, columnNames, argsList);
+				} else {
+					this.jdbcBatchInsert(argsList);
 				}
-				if (!isDoris()) {
-					targetTransactionManager.commit(status);
-				}
-				LOG.info("batch init insert,size={},time={},sql={}", argsList.size(), System.currentTimeMillis() - start, sql);
+				long batchTime = System.currentTimeMillis() - start;
+				long totalTime = System.currentTimeMillis() - this.start;
+				LOG.info("batch init insert,totalCount={},totalTime={},batchSize={},batchTime={},sql={}", rowCount, totalTime, argsList.size(), batchTime, insertSql);
 			});
 		}
 
+		private void jdbcBatchInsert(List<Object[]> argsList) {
+			TransactionStatus status = isDoris() ? null : targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
+			try {
+				if (isPg()) {
+					targetJdbcTemplate.execute("set local synchronous_commit = off");
+				}
+				targetJdbcTemplate.batchUpdate(insertSql, argsList);
+			} catch (Exception e) {
+				if (!isDoris()) {
+					targetTransactionManager.rollback(status);
+				}
+				LOG.error("batchUpdate error,sql={},args={}", insertSql, argsList.get(0), e);
+				throw e;
+			}
+			if (!isDoris()) {
+				targetTransactionManager.commit(status);
+			}
+		}
+
+
 		@Override
 		public Integer extractData(ResultSet rs) throws SQLException, DataAccessException {
+			LOG.info("batch init query start,table={}.{}", database, table);
 			List<Object[]> argsList = new ArrayList<>();
 			String database = getSchema(this.database);
 			while (rs.next()) {
@@ -810,9 +838,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					columnCount = rsmd.getColumnCount();
 					columnNames = new String[columnCount];
 					for (int i = 0; i < columnCount; i++) {
-						columnNames[i] = delimit(JdbcUtils.lookupColumnName(rsmd, i + 1));
+						columnNames[i] = JdbcUtils.lookupColumnName(rsmd, i + 1);
 					}
-					insertSql = String.format("insert into %s(%s) values(%s)", delimit(database, table), StringUtils.join(columnNames, ","), StringUtils.join(Collections.nCopies(columnNames.length, "?"), ","));
+					String names = quote() + StringUtils.join(columnNames, quote() + "," + quote()) + quote();
+					insertSql = String.format("insert into %s(%s) values(%s)", delimit(database, table), names, StringUtils.join(Collections.nCopies(columnNames.length, "?"), ","));
 					if (targetJdbcTemplate.queryForList(String.format("select 1 from %s limit 1", delimit(database, table)), Integer.class).size() > 0) {
 						if (initDataDelete) {
 							try {
@@ -838,13 +867,13 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					args[i] = value;
 				}
 				argsList.add(args);
-				if (argsList.size() >= batchLimit || (!isMysql() && (argsList.size() + 1) * columnCount >= sqlArgsLimit)) {
-					this.asyncBatchInsert(insertSql, argsList);
+				if (argsList.size() >= batchLimit || (isPg() && (argsList.size() + 1) * columnCount >= sqlArgsLimit)) {
+					this.asyncBatchInsert(argsList);
 					argsList = new ArrayList<>();
 				}
 			}
 			if (argsList.size() > 0) {
-				this.asyncBatchInsert(insertSql, argsList);
+				this.asyncBatchInsert(argsList);
 			}
 			LOG.info("batch init query completed,table={}.{},rowCount={},time={}", database, table, rowCount, System.currentTimeMillis() - start);
 			return rowCount;

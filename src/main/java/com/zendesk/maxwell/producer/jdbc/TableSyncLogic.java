@@ -384,12 +384,20 @@ public class TableSyncLogic {
 			for (Object mod : change.columnMods) {
 				if (mod instanceof RenameColumnMod) {
 					RenameColumnMod tmpMod = (RenameColumnMod) mod;
-					this.executeDDL(targetSchema, String.format(alterSql, producer.delimit(targetSchema, r.getTable()), producer.delimit(tmpMod.oldName), producer.delimit(tmpMod.newName)));
+					try {
+						this.executeDDL(targetSchema, String.format(alterSql, producer.delimit(targetSchema, r.getTable()), producer.delimit(tmpMod.oldName), producer.delimit(tmpMod.newName)));
+					} catch (Exception e) {
+						LOG.error("RenameColumnMod error,sql={}", r.getSql(), e);
+					}
 					onlyRename = true;
 				} else if (mod instanceof ChangeColumnMod) {
 					ChangeColumnMod tmpMod = (ChangeColumnMod) mod;
 					if (!tmpMod.name.equals(tmpMod.definition.getName())) {
-						this.executeDDL(targetSchema, String.format(alterSql, producer.delimit(targetSchema, r.getTable()), producer.delimit(tmpMod.name), producer.delimit(tmpMod.definition.getName())));
+						try {
+							this.executeDDL(targetSchema, String.format(alterSql, producer.delimit(targetSchema, r.getTable()), producer.delimit(tmpMod.name), producer.delimit(tmpMod.definition.getName())));
+						} catch (Exception e) {
+							LOG.error("ChangeColumnMod error,sql={}", r.getSql(), e);
+						}
 					}
 				}
 			}

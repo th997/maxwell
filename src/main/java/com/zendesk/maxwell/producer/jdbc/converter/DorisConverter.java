@@ -23,7 +23,7 @@ public class DorisConverter implements Converter {
 	public boolean isSameType(TableColumn c) {
 		return Objects.equals(source.getColumnName(), c.getColumnName())//
 			&& (Objects.equals(source.getDataType(), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getColumnType()))//
-			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null || c.getColumnType().equalsIgnoreCase("string") || source.getStrLen() * 3 <= c.getStrLen())//
+			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null || c.getColumnType().equalsIgnoreCase("string") || source.getStrLen() * 3 <= c.getStrLen() || c.getStrLen() == 1048576)//
 			&& (Objects.equals(source.getNumericPrecision(), c.getNumericPrecision()) && Objects.equals(source.getNumericScale(), c.getNumericScale()) || !"decimal".equals(source.getDataType()));
 	}
 
@@ -87,12 +87,15 @@ public class DorisConverter implements Converter {
 				} else {
 					type = "varchar(1048576)";
 				}
+			} else if (source.getDataType().equals("time")) {
+				type = "varchar(32)";
 			} else {
 				type = "string";
 			}
 		} else if (source.getDataType().endsWith("blob") //
 			|| source.getDataType().endsWith("binary")) {
-			type = "varbinary";
+			//type = "varbinary";
+			type = "varchar(1048576)";
 		} else if (source.getDataType().equals("double") || source.getDataType().equals("float")) {
 			type = source.getDataType();
 		} else if (source.getDataType().equals("timestamp")) {

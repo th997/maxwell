@@ -7,12 +7,10 @@ import com.zendesk.maxwell.row.RowMap;
 import com.zendesk.maxwell.schema.ddl.DDLMap;
 import com.zendesk.maxwell.schema.ddl.ResolvedSchemaChange;
 import com.zendesk.maxwell.util.StoppableTask;
-import org.apache.kafka.clients.admin.AdminClient;
-import org.apache.kafka.clients.admin.ListTopicsOptions;
-import org.apache.kafka.clients.admin.ListTopicsResult;
-import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.*;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.utils.Utils;
 import org.slf4j.Logger;
@@ -34,38 +32,49 @@ import java.util.concurrent.TimeoutException;
 
 public class JdbcAsyncConsumer implements StoppableTask {
 	private final Logger LOG = LoggerFactory.getLogger(getClass());
-	private final MaxwellContext context;
-	private final JdbcProducer jdbcProducer;
-	private ConcurrentMessageListenerContainer<String, String> container;
-	private ObjectMapper om = new ObjectMapper();
+	final MaxwellContext context;
+	final JdbcProducer jdbcProducer;
+	final Properties kafkaProperties;
+	final Properties jdbcProperties;
+	final ObjectMapper om = new ObjectMapper();
+	final Map<String, Object> props;
+	final String topic;
+	final String group;
+	final Integer numPartitions;
+	final Short replicationFactor;
+
+	ConcurrentMessageListenerContainer<String, String> container;
 
 	public JdbcAsyncConsumer(MaxwellContext context) throws IOException {
 		this.context = context;
-		jdbcProducer = new JdbcProducer(context);
-		this.initialize();
-	}
-
-	private void initialize() {
+		this.jdbcProducer = new JdbcProducer(context);
 		// get config
-		Properties kafkaProperties = context.getConfig().kafkaProperties;
-		Properties jdbcProperties = context.getConfig().jdbcProperties;
-		String topic = context.getConfig().kafkaTopic;
-		int numPartitions = Integer.parseInt(jdbcProperties.getProperty("consumer.numPartitions", "10"));
-		short replicationFactor = Short.parseShort(jdbcProperties.getProperty("consumer.replicationFactor", "2"));
-		String group = jdbcProperties.getProperty("consumer.group", topic + "-group");
+		this.kafkaProperties = context.getConfig().kafkaProperties;
+		this.jdbcProperties = context.getConfig().jdbcProperties;
+		this.topic = context.getConfig().kafkaTopic;
+		this.numPartitions = Integer.parseInt(jdbcProperties.getProperty("consumer.numPartitions", "10"));
+		this.replicationFactor = Short.parseShort(jdbcProperties.getProperty("consumer.replicationFactor", "2"));
+		this.group = jdbcProperties.getProperty("consumer.group", topic + "-group");
 		// kafka consumer
 		kafkaProperties.put(ConsumerConfig.GROUP_ID_CONFIG, group);
 		kafkaProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
 		kafkaProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
 		kafkaProperties.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-		Map<String, Object> props = Utils.propsToMap(kafkaProperties);
-		DefaultKafkaConsumerFactory<Object, Object> defaultFactory = new DefaultKafkaConsumerFactory<>(props);
+		props = Utils.propsToMap(kafkaProperties);
+		// start
+		this.start();
+		this.jdbcProducer.start();
+	}
+
+	private void start() {
 		// create or modify topic
-		this.createOrModifyTopics(props, topic, numPartitions, replicationFactor);
+		this.createOrModifyTopics(props, topic, group, numPartitions, replicationFactor);
 		TopicPartitionOffset[] partitionOffsets = new TopicPartitionOffset[numPartitions];
 		for (int i = 0; i < numPartitions; i++) {
 			partitionOffsets[i] = new TopicPartitionOffset(topic, i);
 		}
+		// consumer
+		DefaultKafkaConsumerFactory<Object, Object> defaultFactory = new DefaultKafkaConsumerFactory<>(props);
 		ContainerProperties containerProperties = new ContainerProperties(partitionOffsets);
 		containerProperties.setAckMode(ContainerProperties.AckMode.MANUAL);
 		containerProperties.setMessageListener(new BinLogMessageListener());
@@ -74,8 +83,9 @@ public class JdbcAsyncConsumer implements StoppableTask {
 		container.setConcurrency(numPartitions);
 		// Retry immediately without delay，and if retry times exceeds 2 times, throw exception to stop
 		container.setCommonErrorHandler(new DefaultErrorHandler((record, exception) -> {
-			throw new RuntimeException(exception);
-		}, new FixedBackOff(0L, 2L)));
+			LOG.error("consumer error, system exit!!!");
+			System.exit(-1);
+		}, new FixedBackOff(0L, 1L)));
 		container.start();
 	}
 
@@ -85,11 +95,10 @@ public class JdbcAsyncConsumer implements StoppableTask {
 
 	@Override
 	public void requestStop() throws Exception {
+		LOG.info("JdbcAsyncConsumer requestStop...");
 		container.pause();
 		jdbcProducer.requestStop();
-		if (container != null) {
-			container.stop();
-		}
+		container.stop();
 	}
 
 	@Override
@@ -104,26 +113,26 @@ public class JdbcAsyncConsumer implements StoppableTask {
 			try {
 				JsonNode node = om.readTree(record.value());
 				String type = node.get("type").asText();
+				long ts = node.get("ts").asLong() * 1000;
 				if ("ddl".equals(type)) {
-					ResolvedSchemaChange change = om.readValue(node.get("change").toString(), ResolvedSchemaChange.class);
-					rowMap = new DDLMap(change, node.get("ts").asLong() * 1000, node.get("sql").asText(), null, null, node.get("schemaId").asLong());
+					ResolvedSchemaChange change = node.has("change") ? om.readValue(node.get("change").toString(), ResolvedSchemaChange.class) : null;
+					rowMap = new DDLMap(change, ts, node.get("sql").asText(), null, null, node.get("schemaId").asLong());
 				} else {
-					List<String> keys = null;
-					if (node.has("primary_key_columns")) {
-						keys = om.readValue(node.get("primary_key_columns").toString(), ArrayList.class);
-					}
-					rowMap = new RowMap(type, node.get("database").asText(), node.get("table").asText(), node.get("ts").asLong() * 1000, keys, null, null, null);
+					String database = node.has("database") ? node.get("database").asText() : null;
+					String table = node.has("table") ? node.get("table").asText() : null;
+					List<String> keys = node.has("primary_key_columns") ? om.readValue(node.get("primary_key_columns").toString(), ArrayList.class) : null;
+					rowMap = new RowMap(type, database, table, ts, keys, null, null, null);
 					if (node.has("data")) {
 						Map<String, Object> data = om.readValue(node.get("data").toString(), HashMap.class);
 						rowMap.getData().putAll(data);
+						if (node.has("old")) {
+							Map<String, Object> old = om.readValue(node.get("old").toString(), HashMap.class);
+							rowMap.getOldData().putAll(old);
+						}
 					}
-					if (node.has("old")) {
-						Map<String, Object> old = om.readValue(node.get("old").toString(), HashMap.class);
-						rowMap.getOldData().putAll(old);
-					}
-					if (node.has("commit") && node.get("commit").asBoolean()) {
-						rowMap.setTXCommit();
-					}
+				}
+				if (node.has("commit") && node.get("commit").asBoolean()) {
+					rowMap.setTXCommit();
 				}
 				rowMap.setBindObject(acknowledgment);
 				getJdbcProducer().push(rowMap);
@@ -134,7 +143,7 @@ public class JdbcAsyncConsumer implements StoppableTask {
 		}
 	}
 
-	private void createOrModifyTopics(Map<String, Object> props, String topic, int numPartitions, short replicationFactor) {
+	private void createOrModifyTopics(Map<String, Object> props, String topic, String group, int numPartitions, short replicationFactor) {
 		try (AdminClient adminClient = AdminClient.create(props)) {
 			ListTopicsOptions options = new ListTopicsOptions();
 			options.listInternal(false);
@@ -147,6 +156,17 @@ public class JdbcAsyncConsumer implements StoppableTask {
 				}
 			} catch (InterruptedException | ExecutionException e) {
 				throw new RuntimeException(e);
+			}
+			// delete old consumer group
+			if (jdbcProducer.initSchemas && jdbcProducer.initData) {
+				DeleteConsumerGroupsResult deleteConsumerGroupsResult = adminClient.deleteConsumerGroups(Arrays.asList(group));
+				try {
+					deleteConsumerGroupsResult.all().get();
+				} catch (Exception e) {
+					if (!(e.getCause() instanceof GroupIdNotFoundException)) {
+						throw new RuntimeException(e);
+					}
+				}
 			}
 		}
 	}

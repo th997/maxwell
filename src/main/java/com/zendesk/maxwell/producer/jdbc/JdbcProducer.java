@@ -282,7 +282,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		TransactionStatus status = isDoris() ? null : targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
 			for (UpdateSqlGroup group : groupList) {
-				this.batchUpdateGroup(group);
+				if (isDoris() && group.getSql().startsWith("insert")) {
+					dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
+				} else {
+					this.batchUpdateGroup(group);
+				}
 			}
 			if (!isDoris()) {
 				targetTransactionManager.commit(status);
@@ -364,6 +368,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			}
 			group.setLastRowMap(sql.getRowMap());
 			group.getArgsList().add(sql.getArgs());
+			group.getDataList().add(sql.getRowMap().getData());
 			if (sql.getSqlWithArgs() != null) {
 				group.getSqlWithArgsList().add(sql.getSqlWithArgs());
 			}
@@ -373,15 +378,31 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		}
 		for (UpdateSqlGroup group : ret) {
 			RowMap r = group.getLastRowMap();
-			if ("delete".equals(r.getRowType()) && r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
+			if (r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
-				Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
-				String sql = new StringBuilder().append("delete from ").append(delimit(getSchema(r.getDatabase()), r.getTable())).append(" where ")  //
-					.append(delimit(r.getPrimaryKeyColumns().get(0))).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
-				List<Object[]> argsList = new ArrayList<>();
-				argsList.add(ids);
-				group.setSql(sql);
-				group.setArgsList(argsList);
+				boolean merge = true;
+				if ("update".equals(r.getRowType())) {
+					// merge update sql "update table set a=?,b=? where id=? ..." to "update table set a=?,b=? where id in(?,?...)"
+					Object[] before = null;
+					int argsLen = group.getArgsList().get(0).length - 1;
+					for (Object[] args : group.getArgsList()) {
+						if (before != null && !Arrays.equals(before, 0, argsLen, args, 0, argsLen)) {
+							merge = false;
+							break;
+						}
+						before = args;
+					}
+				}
+				if ("delete".equals(r.getRowType()) || (merge && "update".equals(r.getRowType()))) {
+					String key = delimit(r.getPrimaryKeyColumns().get(0));
+					int keyLoc = group.getSql().lastIndexOf(key + "=?");
+					Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
+					String sql = new StringBuilder().append(group.getSql().substring(0, keyLoc)).append(key).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
+					group.setSql(sql);
+					group.setArgsList(new ArrayList<>());
+					group.getArgsList().add(ids);
+					group.getSqlWithArgsList().clear();
+				}
 			}
 		}
 		if (ret.size() > 1) {
@@ -391,6 +412,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				UpdateSqlGroup next = iterator.next();
 				if (last != null && !last.getSqlWithArgsList().isEmpty() && !next.getSqlWithArgsList().isEmpty() && next.getArgsList().size() < sqlMergeSize) {
 					last.getSqlWithArgsList().addAll(next.getSqlWithArgsList());
+					last.getDataList().addAll(next.getDataList());
 					iterator.remove();
 				} else {
 					last = next;

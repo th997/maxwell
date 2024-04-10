@@ -4,12 +4,14 @@ import com.zendesk.maxwell.row.RowMap;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public class UpdateSqlGroup {
 	private String sql;
 	private List<Object[]> argsList = new ArrayList<>();
 	private RowMap lastRowMap;
 	private List<String> sqlWithArgsList = new ArrayList<>();
+	private List<Map<String, Object>> dataList = new ArrayList<>();
 
 	public UpdateSqlGroup(String sql) {
 		this.sql = sql;
@@ -45,5 +47,13 @@ public class UpdateSqlGroup {
 
 	public void setSqlWithArgsList(List<String> sqlWithArgsList) {
 		this.sqlWithArgsList = sqlWithArgsList;
+	}
+
+	public List<Map<String, Object>> getDataList() {
+		return dataList;
+	}
+
+	public void setDataList(List<Map<String, Object>> dataList) {
+		this.dataList = dataList;
 	}
 }

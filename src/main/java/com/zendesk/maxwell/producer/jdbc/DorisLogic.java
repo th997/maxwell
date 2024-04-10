@@ -12,12 +12,15 @@ import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.DefaultRedirectStrategy;
 import org.apache.http.impl.client.HttpClients;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 public class DorisLogic {
+	protected final Logger LOG = LoggerFactory.getLogger(getClass());
 	final JdbcProducer jdbcProducer;
 	final CloseableHttpClient httpClient;
 	final Properties properties;
@@ -60,6 +63,7 @@ public class DorisLogic {
 	}
 
 	public void streamLoad(String schema, String table, List<Map<String, Object>> list) {
+		long start = System.currentTimeMillis();
 		try {
 			String body = om.writeValueAsString(list);
 			String url = String.format("%s/api/%s/%s/_stream_load", httpAddress, schema, table);
@@ -89,6 +93,9 @@ public class DorisLogic {
 			}
 		} catch (IOException e) {
 			throw new RuntimeException(e);
+		}
+		if (!jdbcProducer.initData) {
+			LOG.info("streamLoad database={},table={},size={},time={}", schema, table, list.size(), System.currentTimeMillis() - start);
 		}
 	}
 

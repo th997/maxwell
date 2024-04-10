@@ -24,7 +24,7 @@ public class DorisConverter implements Converter {
 		return Objects.equals(source.getColumnName(), c.getColumnName())//
 			&& (Objects.equals(source.getDataType(), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getColumnType()))//
 			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null || c.getColumnType().equalsIgnoreCase("string") || source.getStrLen() * 3 <= c.getStrLen() || c.getStrLen() == 1048576)//
-			&& (Objects.equals(source.getNumericPrecision(), c.getNumericPrecision()) && Objects.equals(source.getNumericScale(), c.getNumericScale()) || !"decimal".equals(source.getDataType()));
+			;
 	}
 
 	@Override
@@ -62,15 +62,15 @@ public class DorisConverter implements Converter {
 	// https://doris.apache.org/zh-CN/docs/lakehouse/multi-catalog/jdbc/?_highlight=unsigned#mysql
 	private String typeGet(String dataType) {
 		String type = source.getColumnType();
-		if (source.getColumnType().endsWith("unsigned") || source.getColumnType().contains(" unsigned ")) {
+		if (source.getDataType().equals("decimal")) {
+			type = "decimal(38,18)";
+		} else if (source.getColumnType().endsWith("unsigned") || source.getColumnType().contains(" unsigned ")) {
 			if (source.getDataType().equals("tinyint")) {
 				type = "smallint";
 			} else if (source.getDataType().equals("mediumint")) {
 				type = "int";
 			} else if (source.getDataType().equals("int")) {
 				type = "bigint";
-			} else if (source.getDataType().equals("decimal")) {
-				type = source.getColumnType().replace("unsigned", "");
 			} else {
 				type = source.getDataType();
 			}

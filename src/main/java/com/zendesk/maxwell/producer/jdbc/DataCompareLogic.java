@@ -3,6 +3,7 @@ package com.zendesk.maxwell.producer.jdbc;
 import com.google.common.base.Equivalence;
 import com.google.common.collect.MapDifference;
 import com.google.common.collect.Maps;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.BeanPropertyRowMapper;
@@ -116,10 +117,18 @@ public class DataCompareLogic {
 		Set<Long> diff1 = set1.stream().filter(e -> !set2.contains(e)).collect(Collectors.toSet());
 		Set<Long> diff2 = set2.stream().filter(e -> !set1.contains(e)).collect(Collectors.toSet());
 		if (!diff1.isEmpty()) { // add
-			LOG.info("dataDiff only mysql,db={},table={},diff={}", db, table, diff1);
+			String insertSql = "INSERT INTO `%s`.`bootstrap` (database_name, table_name, where_clause, client_id) VALUES('%s','%s','%s','%s')";
+			String maxwellDb = producer.context.getConfig().maxwellMysql.database;
+			String maxwellClient = producer.context.getConfig().clientID;
+			String where = String.format("`%s` in (%s)", pri.getColumnName(), StringUtils.join(diff1, ","));
+			insertSql = String.format(insertSql, maxwellDb, db, table, where, maxwellClient);
+			LOG.info("dataDiff only mysql,db={},table={},insertSql={}", db, table, insertSql);
+
 		}
 		if (!diff2.isEmpty()) { // delete
-			LOG.info("dataDiff only target,db={},table={},diff={}", db, table, diff1);
+			String deleteSql = "delete from %s where %s in (%s)";
+			deleteSql = String.format(deleteSql, producer.delimit(db, table), producer.delimit(pri.getColumnName()), StringUtils.join(diff2, ","));
+			LOG.info("dataDiff only target,db={},table={},deleteSql={}", db, table, deleteSql);
 		}
 	}
 

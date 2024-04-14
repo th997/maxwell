@@ -35,6 +35,7 @@ import java.util.concurrent.*;
 
 public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	protected final Logger LOG = LoggerFactory.getLogger(getClass());
+	final MaxwellContext context;
 	final Properties properties;
 	final ComboPooledDataSource targetDs;
 	final JdbcTemplate targetJdbcTemplate;
@@ -74,6 +75,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 
 	public JdbcProducer(MaxwellContext context) throws IOException {
 		super(context);
+		this.context = context;
 		om = new ObjectMapper();
 		om.registerModule(new JavaTimeModule());
 		om.setDateFormat(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));

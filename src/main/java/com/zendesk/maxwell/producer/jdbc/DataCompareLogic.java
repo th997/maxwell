@@ -116,10 +116,10 @@ public class DataCompareLogic {
 		Set<Long> diff1 = set1.stream().filter(e -> !set2.contains(e)).collect(Collectors.toSet());
 		Set<Long> diff2 = set2.stream().filter(e -> !set1.contains(e)).collect(Collectors.toSet());
 		if (!diff1.isEmpty()) { // add
-			LOG.info("dataDiff only mysql,db={},table={},diff={}", diff1);
+			LOG.info("dataDiff only mysql,db={},table={},diff={}", db, table, diff1);
 		}
 		if (!diff2.isEmpty()) { // delete
-			LOG.info("dataDiff only target,db={},table={},diff={}", diff1);
+			LOG.info("dataDiff only target,db={},table={},diff={}", db, table, diff1);
 		}
 	}
 

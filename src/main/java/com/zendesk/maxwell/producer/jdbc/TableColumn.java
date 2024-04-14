@@ -1,6 +1,7 @@
 package com.zendesk.maxwell.producer.jdbc;
 
 public class TableColumn {
+	private String tableName;
 	private String columnName;
 	private String columnType;
 	private String dataType;
@@ -99,5 +100,13 @@ public class TableColumn {
 
 	public void setColumnType(String columnType) {
 		this.columnType = columnType;
+	}
+
+	public String getTableName() {
+		return tableName;
+	}
+
+	public void setTableName(String tableName) {
+		this.tableName = tableName;
 	}
 }

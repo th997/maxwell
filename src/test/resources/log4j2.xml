@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Configuration status="WARN">
   <Appenders>
-    <File name="TestLog" fileName="test.log">
-      <PatternLayout pattern="[%T] %d{HH:mm:ss,SSS} %-5level %logger{1} - %msg%n"/>
-    </File>
+    <Console name="Console" target="SYSTEM_ERR">
+      <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss} %-5level [%t] %F:%L - %.-8192msg%n"/>
+    </Console>
   </Appenders>
   <Loggers>
-    <Root level="debug">
-      <AppenderRef ref="TestLog"/>
+    <Root level="info">
+      <AppenderRef ref="Console"/>
     </Root>
    <Logger name="com.mchange.v2" level="error" additivity="false">
-      <AppenderRef ref="TestLog"/>
+      <AppenderRef ref="Console"/>
     </Logger>
   </Loggers>
 </Configuration>

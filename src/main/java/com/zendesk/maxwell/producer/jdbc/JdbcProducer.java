@@ -66,6 +66,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	final boolean initDataDelete;
 	final ObjectMapper om;
 	Position initPosition = null;
+	// data compare
+	final Integer dataCompareSecond;
+	DataCompareLogic dataCompareLogic;
+	Integer dataCompareLimit;
+	Integer dataCompareRowsLimit;
 
 	public JdbcProducer(MaxwellContext context) throws IOException {
 		super(context);
@@ -87,6 +92,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		replicationNum = Integer.parseInt(properties.getProperty("replicationNum", "1"));
 		bucketNum = Integer.parseInt(properties.getProperty("bucketNum", "1"));
 		heartbeatSecond = Integer.parseInt(properties.getProperty("heartbeatSecond", "10"));
+		dataCompareSecond = Integer.parseInt(properties.getProperty("dataCompareSecond", "0"));
 		// init data
 		initData = "true".equalsIgnoreCase(properties.getProperty("initData"));
 		initDataLock = "true".equalsIgnoreCase(properties.getProperty("initDataLock", "true"));
@@ -148,7 +154,15 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		if (syncIndexMinute > 0) {
 			this.startSyncIndexTask(syncIndexMinute);
 		}
-		this.startHeartbeatTask();
+		if (heartbeatSecond > 0) {
+			this.startHeartbeatTask();
+		}
+		if (dataCompareSecond > 0) {
+			dataCompareLogic = new DataCompareLogic(this);
+			dataCompareLimit = Integer.parseInt(properties.getProperty("dataCompareLimit", "200000"));
+			dataCompareRowsLimit = Integer.parseInt(properties.getProperty("dataCompareRowsLimit", "2000000"));
+			this.startCompareTask();
+		}
 		context.getMetrics().register(MetricRegistry.name(context.getConfig().metricsPrefix), new BinlogDelayGaugeSet(context));
 	}
 
@@ -635,13 +649,24 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 
 	private void startHeartbeatTask() {
 		Timer timer = new Timer();
-		Long heartbeatInterval = heartbeatSecond * 1000L;
+		Long interval = heartbeatSecond * 1000L;
 		timer.schedule(new TimerTask() {
 			@Override
 			public void run() {
-				flushQueue(heartbeatInterval);
+				flushQueue(interval);
 			}
-		}, heartbeatInterval, heartbeatInterval);
+		}, interval, interval);
+	}
+
+	private void startCompareTask() {
+		Timer timer = new Timer();
+		Long interval = dataCompareSecond * 1000L;
+		timer.schedule(new TimerTask() {
+			@Override
+			public void run() {
+				dataCompareLogic.compare(null);
+			}
+		}, interval, interval);
 	}
 
 	private void flushQueue(Long heartbeatInterval) {

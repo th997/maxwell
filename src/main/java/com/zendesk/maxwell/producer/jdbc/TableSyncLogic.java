@@ -364,6 +364,9 @@ public class TableSyncLogic {
 		if (change.oldTable != null && change.newTable != null && !change.oldTable.name.equals(change.newTable.name)) {
 			String alterSql = "alter table if exists %s rename to %s";
 			if (producer.isDoris()) {
+				if (producer.isStarRocks()) {
+					return false;
+				}
 				alterSql = "alter table %s rename %s";
 			}
 			try {

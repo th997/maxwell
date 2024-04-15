@@ -427,7 +427,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				}
 			}
 		}
-		if (ret.size() > 1) {
+		if (ret.size() > 1 && !isDoris()) {
 			Iterator<UpdateSqlGroup> iterator = ret.iterator();
 			UpdateSqlGroup last = null;
 			while (iterator.hasNext()) {

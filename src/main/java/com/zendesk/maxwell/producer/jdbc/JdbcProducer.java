@@ -13,6 +13,7 @@ import com.zendesk.maxwell.row.HeartbeatRowMap;
 import com.zendesk.maxwell.row.RowMap;
 import com.zendesk.maxwell.util.C3P0ConnectionPool;
 import com.zendesk.maxwell.util.StoppableTask;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -396,11 +397,12 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			RowMap r = group.getLastRowMap();
 			if (r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
+				Object[] updateArgs = group.getArgsList().get(0);
 				boolean merge = true;
 				if ("update".equals(r.getRowType())) {
 					// merge update sql "update table set a=?,b=? where id=? ..." to "update table set a=?,b=? where id in(?,?...)"
 					Object[] before = null;
-					int argsLen = group.getArgsList().get(0).length - 1;
+					int argsLen = updateArgs.length - 1;
 					for (Object[] args : group.getArgsList()) {
 						if (before != null && !Arrays.equals(before, 0, argsLen, args, 0, argsLen)) {
 							merge = false;
@@ -416,7 +418,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					String sql = new StringBuilder().append(group.getSql().substring(0, keyLoc)).append(key).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
 					group.setSql(sql);
 					group.setArgsList(new ArrayList<>());
-					group.getArgsList().add(ids);
+					if ("update".equals(r.getRowType())) {
+						group.getArgsList().add(ArrayUtils.addAll(Arrays.copyOfRange(updateArgs, 0, updateArgs.length - 1), ids));
+					} else {
+						group.getArgsList().add(ids);
+					}
 					group.getSqlWithArgsList().clear();
 				}
 			}

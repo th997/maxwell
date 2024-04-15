@@ -257,7 +257,7 @@ public class TableSyncLogic {
 			if (!index.get(0).isNonUnique() && "PRIMARY".equals(index.get(0).getKeyName())) {
 				sql = String.format("alter table %s add primary key (%s);", producer.delimit(targetSchema, table), cols);
 			} else {
-				sql = String.format("create %s index %s on %s (%s);", uniq, producer.delimit(indexName), producer.isPg() ? "concurrently" : "" + producer.delimit(targetSchema, table), cols);
+				sql = String.format("create %s index %s %s on %s (%s);", uniq, producer.isPg() ? "concurrently " : "", producer.delimit(indexName), producer.delimit(targetSchema, table), cols);
 			}
 			try {
 				this.executeDDL(targetSchema, sql);

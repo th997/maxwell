@@ -91,13 +91,13 @@ public class DataCompareLogic {
 		}
 		LOG.info("data compare end,db={},tableCount={},time={},same={}", db, tableMap.size(), System.currentTimeMillis() - start, diffTables.isEmpty());
 		if (!diffTables.isEmpty() && count < 2) {
-			LOG.info("diff tables=\"" + String.join("\",\"", diffTables) + "\"");
 			try {
 				Thread.sleep(producer.dataCompareSecond * 1000);
 			} catch (InterruptedException e) {
 			}
 			return compare(db, diffTables, ++count);
 		}
+		LOG.info("diff tables=\"" + String.join("\",\"", diffTables) + "\"");
 		for (String table : diffTables) {
 			this.dataDiff(db, table, tableMap.get(table));
 		}
@@ -162,7 +162,8 @@ public class DataCompareLogic {
 			if (o1 instanceof Number && o2 instanceof Number) {
 				Number n1 = (Number) o1;
 				Number n2 = (Number) o2;
-				return Objects.equals(n1, n2) || n1.doubleValue() == ((Number) o2).doubleValue() || o1.toString().equals(o2.toString());
+				return Objects.equals(n1, n2) || n1.doubleValue() == ((Number) o2).doubleValue() || o1.toString().equals(o2.toString()) //
+					|| Math.round(n1.doubleValue() * 100) == Math.round(n2.doubleValue() * 100);
 			}
 			if (o1 instanceof Boolean || o2 instanceof Boolean) {
 				if (o1 instanceof Number) {

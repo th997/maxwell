@@ -355,13 +355,13 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 
 	private void batchUpdateGroup(UpdateSqlGroup group) {
 		long start = System.currentTimeMillis();
-		String sql = group.getSqlWithArgsList().size() == group.getArgsList().size() ? group.getSql() : (group.getSql() + "...");
+		String sql = group.getSqlWithArgsList().size() > group.getArgsList().size() ? (group.getSql() + "...") : group.getSql();
 		if (group.getSqlWithArgsList().size() > group.getArgsList().size()) {
 			targetJdbcTemplate.batchUpdate(group.getSqlWithArgsList().toArray(new String[group.getSqlWithArgsList().size()]));
 			LOG.info("batchUpdateGroup1 size={},time={},sql={}", group.getSqlWithArgsList().size(), System.currentTimeMillis() - start, sql);
 		} else {
 			this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
-			LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getArgsList().size(), System.currentTimeMillis() - start, sql);
+			LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, sql);
 		}
 	}
 

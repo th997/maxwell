@@ -435,6 +435,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				if (last != null && !last.getSqlWithArgsList().isEmpty() && !next.getSqlWithArgsList().isEmpty() && next.getArgsList().size() < sqlMergeSize) {
 					last.getSqlWithArgsList().addAll(next.getSqlWithArgsList());
 					last.getDataList().addAll(next.getDataList());
+					last.setLastRowMap(next.getLastRowMap());
 					iterator.remove();
 				} else {
 					last = next;

@@ -99,25 +99,31 @@ public class DataCompareLogic {
 		}
 		LOG.info("diff tables=\"" + String.join("\",\"", diffTables) + "\"");
 		for (String table : diffTables) {
-			this.dataDiff(db, table, tableMap.get(table));
+			this.dataDiff(db, table, tableMap.get(table), 0L);
 		}
 		return diffTables;
 	}
 
-	public void dataDiff(String db, String table, List<TableColumn> columns) {
+	public void dataDiff(String db, String table, List<TableColumn> columns, Long start) {
 		TableColumn pri = columns.stream().filter(TableColumn::isPri).findFirst().orElse(null);
 		if (pri == null || !pri.getDataType().contains("int")) {
 			return;
 		}
-		String sql = String.format("select `%s` from `%s`.`%s` order by `%s` desc limit %s", pri.getColumnName(), db, table, pri.getColumnName(), producer.dataCompareLimit);
+		Integer limit = producer.dataCompareRowsLimit;
+		String col = pri.getColumnName();
+		String sql = String.format("select `%s` from `%s`.`%s` where `%s`>%s order by `%s` asc limit %s", col, db, table, col, start, col, limit);
 		List<Long> list1 = producer.mysqlJdbcTemplate.query(sql, SingleColumnRowMapper.newInstance(Long.class));
 		Set<Long> set1 = new HashSet<>(list1);
 		List<Long> list2 = producer.targetJdbcTemplate.query(sql.replace('`', producer.quote()), SingleColumnRowMapper.newInstance(Long.class));
 		Set<Long> set2 = new HashSet<>(list2);
 		Set<Long> diff1 = set1.stream().filter(e -> !set2.contains(e)).collect(Collectors.toSet());
 		Set<Long> diff2 = set2.stream().filter(e -> !set1.contains(e)).collect(Collectors.toSet());
+		if (diff1.isEmpty() && diff2.isEmpty() && list1.size() == limit) {
+			dataDiff(db, table, columns, list1.get(list1.size() - 1));
+			return;
+		}
 		if (!diff1.isEmpty()) { // add
-			String insertSql = "INSERT INTO `%s`.`bootstrap` (database_name, table_name, where_clause, client_id) VALUES('%s','%s','%s','%s')";
+			String insertSql = "insert into `%s`.`bootstrap` (database_name, table_name, where_clause, client_id) values('%s','%s','%s','%s')";
 			String maxwellDb = producer.context.getConfig().maxwellMysql.database;
 			String maxwellClient = producer.context.getConfig().clientID;
 			String where = String.format("`%s` in (%s)", pri.getColumnName(), StringUtils.join(diff1, ","));

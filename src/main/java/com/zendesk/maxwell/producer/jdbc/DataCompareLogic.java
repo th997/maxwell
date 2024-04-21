@@ -128,13 +128,21 @@ public class DataCompareLogic {
 			String maxwellClient = producer.context.getConfig().clientID;
 			String where = String.format("`%s` in (%s)", pri.getColumnName(), StringUtils.join(diff1, ","));
 			insertSql = String.format(insertSql, maxwellDb, db, table, where, maxwellClient);
-			LOG.info("dataDiff only mysql,db={},table={},insertSql={}", db, table, insertSql);
+			LOG.info("dataDiff only mysql,db={},table={},updateSql=\n{}", db, table, insertSql);
 
 		}
 		if (!diff2.isEmpty()) { // delete
 			String deleteSql = "delete from %s where %s in (%s)";
 			deleteSql = String.format(deleteSql, producer.delimit(db, table), producer.delimit(pri.getColumnName()), StringUtils.join(diff2, ","));
-			LOG.info("dataDiff only target,db={},table={},deleteSql={}", db, table, deleteSql);
+			LOG.info("dataDiff only target,db={},table={},updateSql=\n{}", db, table, deleteSql);
+		}
+		if (diff1.isEmpty() && diff2.isEmpty()) {
+			String deleteSql = String.format("truncate table %s", producer.delimit(db, table));
+			String maxwellDb = producer.context.getConfig().maxwellMysql.database;
+			String maxwellClient = producer.context.getConfig().clientID;
+			String insertSql = String.format("insert into `%s`.`bootstrap` (database_name, table_name, client_id) values('%s','%s','%s')", maxwellDb, db, table, maxwellClient);
+			Integer count = producer.targetJdbcTemplate.queryForObject(String.format("select count(*) from %s", producer.delimit(db, table)), Integer.class);
+			LOG.info("dataDiff only diff,db={},table={},count={},updateSql=\n{}\n{}", db, table, count, deleteSql, insertSql);
 		}
 	}
 

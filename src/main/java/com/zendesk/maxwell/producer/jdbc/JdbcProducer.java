@@ -11,6 +11,7 @@ import com.zendesk.maxwell.producer.AbstractProducer;
 import com.zendesk.maxwell.replication.Position;
 import com.zendesk.maxwell.row.HeartbeatRowMap;
 import com.zendesk.maxwell.row.RowMap;
+import com.zendesk.maxwell.schema.MysqlSchemaStore;
 import com.zendesk.maxwell.util.C3P0ConnectionPool;
 import com.zendesk.maxwell.util.StoppableTask;
 import org.apache.commons.lang3.ArrayUtils;
@@ -144,13 +145,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			this.initSchemas(syncDbs, initData);
 			if (initData) {
 				LOG.info("InitSchemas completed!!! The program will exit!!! please set config initSchemas=false and restart,initPosition={}", initPosition);
-				if (initPosition != null) {
-					try {
-						context.getPositionStore().set(initPosition);
-					} catch (Exception e) {
-						LOG.error("init error", e);
-					}
-				}
 				System.exit(0);
 			}
 		}
@@ -713,7 +707,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			try {
 				replicationConnection = mysqlJdbcTemplate.getDataSource().getConnection();
 				this.initData(syncDbs, replicationConnection);
-			} catch (SQLException e) {
+			} catch (Exception e) {
 				LOG.error("sql error", e);
 				throw new RuntimeException(e);
 			} finally {
@@ -752,7 +746,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	// Refer to  https://github.com/ClickHouse/ClickHouse/blob/master/src/Databases/MySQL/MaterializeMetadata.cpp
-	private void initData(Set<String> syncDbs, Connection replicationConnection) throws SQLException {
+	private void initData(Set<String> syncDbs, Connection replicationConnection) throws Exception {
 		long start = System.currentTimeMillis();
 		// flush tables;
 		// flush tables with read lock;
@@ -783,6 +777,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						}
 						DataSourceUtils.releaseConnection(replicationConnection, mysqlJdbcTemplate.getDataSource());
 						LOG.info("lockTableTime={}", System.currentTimeMillis() - start);
+						MysqlSchemaStore mysqlSchemaStore = new MysqlSchemaStore(this.context, initPosition);
+						mysqlSchemaStore.getSchema();
+						context.getPositionStore().set(initPosition);
+						LOG.info("init schema finished");
 						transactionStart = true;
 					}
 					if (!tableSyncLogic.syncTable(database, table, false)) {

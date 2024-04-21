@@ -14,9 +14,11 @@ import java.util.Map;
 public class BinlogDelayGaugeSet implements MetricSet {
 	static final Logger LOG = LoggerFactory.getLogger(BinlogDelayGaugeSet.class);
 	private MaxwellContext context;
+	private Map<String, Metric> metrics;
 
 	public BinlogDelayGaugeSet(MaxwellContext context) {
 		this.context = context;
+		metrics = context.getMetrics().getRegistry().getMetrics();
 
 	}
 
@@ -37,7 +39,14 @@ public class BinlogDelayGaugeSet implements MetricSet {
 		}
 		int delay = 0;
 		if (position != null) {
-			delay = (int) ((System.currentTimeMillis() - position.getLastHeartbeatRead()) / 1000);
+			if (position.getLastHeartbeatRead() == 0) {
+				Gauge<Long> metric = (Gauge<Long>) metrics.get(context.getConfig().metricsPrefix + ".replication.lag");
+				if (metric != null) {
+					delay = (int) (metric.getValue() / 1000);
+				}
+			} else {
+				delay = (int) ((System.currentTimeMillis() - position.getLastHeartbeatRead()) / 1000);
+			}
 		}
 		return delay;
 	}

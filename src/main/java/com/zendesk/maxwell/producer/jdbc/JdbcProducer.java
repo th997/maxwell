@@ -667,7 +667,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		timer.schedule(new TimerTask() {
 			@Override
 			public void run() {
-				dataCompareLogic.compare(null);
+				try {
+					dataCompareLogic.compare(null);
+				} catch (Exception e) {
+					LOG.error("startCompareTask error:", e);
+				}
 			}
 		}, interval, interval);
 	}
@@ -676,7 +680,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		Long now = System.currentTimeMillis();
 		for (Map.Entry<Thread, Long> entry : lastUpdateMap.entrySet()) {
 			if (now - entry.getValue() > heartbeatInterval) {
-				batchUpdate(null, entry.getKey());
+				try {
+					batchUpdate(null, entry.getKey());
+				} catch (Exception e) {
+					LOG.error("flushQueue error", e);
+				}
 			}
 		}
 	}
@@ -691,9 +699,13 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			public void run() {
 				for (String database : syncDbs) {
 					LOG.info("SyncIndexTask start:{}", database);
-					List<String> tables = tableSyncLogic.getMysqlTables(database);
-					for (String table : tables) {
-						tableSyncLogic.syncIndex(database, table);
+					try {
+						List<String> tables = tableSyncLogic.getMysqlTables(database);
+						for (String table : tables) {
+							tableSyncLogic.syncIndex(database, table);
+						}
+					} catch (Exception e) {
+						LOG.error("SyncIndexTask error", e);
 					}
 					LOG.info("SyncIndexTask end:{}", database);
 				}

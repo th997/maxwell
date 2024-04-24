@@ -81,7 +81,7 @@ public class JdbcAsyncConsumer implements StoppableTask {
 		container = new ConcurrentMessageListenerContainer<>(defaultFactory, containerProperties);
 		// one thread per partition
 		container.setConcurrency(numPartitions);
-		// Retry immediately without delay，and if retry times exceeds 2 times, throw exception to stop
+		// Retry immediately without delay，and if retry times exceeds 1 times, throw exception to stop
 		container.setCommonErrorHandler(new DefaultErrorHandler((record, exception) -> {
 			LOG.error("consumer error, system exit!!!");
 			System.exit(-1);

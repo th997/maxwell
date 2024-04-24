@@ -175,6 +175,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			this.batchUpdate(sqlList);
 		}
 		if (!syncDbs.contains(r.getDatabase())) {
+			if (sqlList.isEmpty()) {
+				this.setPosition(r);
+			}
 			return;
 		}
 		UpdateSql sql = null;
@@ -266,7 +269,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private void addSql(UpdateSql sql) {
-		this.getSqlList().add(sql);
+		synchronized (Thread.currentThread()) {
+			this.getSqlList().add(sql);
+		}
 	}
 
 	private void batchUpdate(Deque<UpdateSql> sqlList) {

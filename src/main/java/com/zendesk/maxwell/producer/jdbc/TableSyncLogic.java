@@ -132,7 +132,16 @@ public class TableSyncLogic {
 							this.executeDDL(targetSchema, String.format("alter table %s alter column %s %s not null", fullTableName, columnName, mysql.isNullAble() ? "drop" : "set"));
 						}
 						if (!converter.isSameType(target)) {
-							this.executeDDL(targetSchema, String.format("alter table %s alter column %s type %s using %s::%s", fullTableName, columnName, converter.toColType(), columnName, converter.typeGet()));
+							boolean isPri = converter.toColType().endsWith("serial ");
+							String type = isPri ? converter.typeGet() : converter.toColType();
+							this.executeDDL(targetSchema, String.format("alter table %s alter column %s type %s using %s::%s", fullTableName, columnName, type, columnName, converter.typeGet()));
+							if (isPri) {
+								// modify to serial
+								String serialName = producer.delimit(targetSchema, String.format("%s_%s_seq", table, mysql.getColumnName()));
+								this.executeDDL(database, "create sequence if not exists " + serialName);
+								this.executeDDL(database, String.format("select setval('%s',coalesce((select max(%s)+1 from %s),1),false)", serialName, columnName, fullTableName));
+								this.executeDDL(database, String.format("alter table %s alter column %s set default nextval('%s')", fullTableName, columnName, serialName));
+							}
 						}
 						if (StringUtils.isNotEmpty(mysql.getColumnComment())) {
 							commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, targetSchema, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));

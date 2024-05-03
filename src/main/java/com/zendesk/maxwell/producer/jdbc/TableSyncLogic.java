@@ -13,6 +13,8 @@ import org.springframework.jdbc.core.BeanPropertyRowMapper;
 import org.springframework.util.CollectionUtils;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Function;
@@ -40,7 +42,7 @@ public class TableSyncLogic {
 	private static final String SQL_CREATE_DB = "create schema %s";
 	private static final String SQL_DROP_TABLE = "drop table if exists %s";
 	private static final String SQL_MYSQL_DBS = "select schema_name from information_schema.schemata where schema_name not in ('mysql','sys','information_schema','performance_schema','pg_catalog','public')";
-
+	private ConcurrentMap<String, List<String>> tablePkMap = new ConcurrentHashMap<>();
 	private JdbcProducer producer;
 	private ExecutorService executorService = Executors.newSingleThreadExecutor();
 
@@ -147,6 +149,9 @@ public class TableSyncLogic {
 							commentSqlList.add(String.format(SQL_POSTGRES_COMMENT, targetSchema, table, mysql.getColumnName(), StringEscapeUtils.escapeSql(mysql.getColumnComment())));
 						}
 					} else if (producer.isDoris()) {
+						if (mysql.isPri()) {
+							this.tablePkMap.remove(fullTableName);
+						}
 						this.executeDDL(targetSchema, String.format("alter table %s modify column %s", fullTableName, converter.toTargetCol(target)));
 					} else {
 						this.executeDDL(targetSchema, String.format("alter table %s change %s %s", fullTableName, columnName, converter.toTargetCol()));
@@ -217,6 +222,26 @@ public class TableSyncLogic {
 		sb.deleteCharAt(sb.length() - 2);
 		sb.append(")");
 		return sb.toString();
+	}
+
+	public List<String> getDorisPkColumns(String database, String table, List<String> pkColumns) {
+		String key = producer.delimit(database, table);
+		List<String> value = this.tablePkMap.get(key);
+		if (value == null) {
+			List<TableColumn> mysqlFields = this.getMysqlFields(database, table);
+			Optional<TableColumn> first = mysqlFields.stream().filter(TableColumn::isPri).filter(TableColumn::isAutoIncrement).findFirst();
+			if (first.isPresent()) {
+				value = Arrays.asList(first.get().getColumnName());
+			} else {
+				value = Collections.emptyList();
+			}
+			tablePkMap.put(key, value);
+		}
+		if (value.isEmpty()) {
+			return pkColumns;
+		} else {
+			return value;
+		}
 	}
 
 	private String getMysqlCreateSql(String database, String table) {

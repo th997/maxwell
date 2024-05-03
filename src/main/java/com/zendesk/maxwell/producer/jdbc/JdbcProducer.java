@@ -1,7 +1,9 @@
 package com.zendesk.maxwell.producer.jdbc;
 
 import com.codahale.metrics.MetricRegistry;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.mchange.v2.c3p0.ComboPooledDataSource;
@@ -42,6 +44,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	final ComboPooledDataSource targetDs;
 	final JdbcTemplate targetJdbcTemplate;
 	final JdbcTemplate mysqlJdbcTemplate;
+	final JdbcTemplate maxwellJdbcTemplate;
 	final DataSourceTransactionManager targetTransactionManager;
 	final DataSourceTransactionManager mysqlTransactionManager;
 	final TableSyncLogic tableSyncLogic;
@@ -81,6 +84,8 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		om = new ObjectMapper();
 		om.registerModule(new JavaTimeModule());
 		om.setDateFormat(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
+		om.enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+		om.enable(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN);
 		properties = context.getConfig().jdbcProperties;
 		resolvePkConflict = "true".equalsIgnoreCase(properties.getProperty("resolvePkConflict", "true"));
 		syncDbs = new HashSet<>(Arrays.asList(StringUtils.split(properties.getProperty("syncDbs", ""), ",")));
@@ -124,7 +129,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		targetDs.setAcquireRetryDelay(3000);
 		targetJdbcTemplate = new JdbcTemplate(targetDs, true);
 		C3P0ConnectionPool sourcePool = (C3P0ConnectionPool) context.getReplicationConnectionPool();
+		C3P0ConnectionPool maxwellPool = (C3P0ConnectionPool) context.getMaxwellConnectionPool();
 		mysqlJdbcTemplate = new JdbcTemplate(sourcePool.getCpds(), true);
+		maxwellJdbcTemplate = new JdbcTemplate(maxwellPool.getCpds(), true);
 		targetTransactionManager = new DataSourceTransactionManager(targetDs);
 		mysqlTransactionManager = new DataSourceTransactionManager(sourcePool.getCpds());
 		tableSyncLogic = new TableSyncLogic(this);
@@ -231,6 +238,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private void setPosition(RowMap r) {
+		if (r == null) {
+			return;
+		}
 		if (r.getNextPosition() != null) {
 			this.context.setPosition(r);
 		} else if (r.getBindObject() instanceof Acknowledgment) {
@@ -355,12 +365,23 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	private void batchUpdateGroup(UpdateSqlGroup group) {
 		long start = System.currentTimeMillis();
 		String sql = group.getSqlWithArgsList().size() > group.getArgsList().size() ? (group.getSql() + "...") : group.getSql();
-		if (group.getSqlWithArgsList().size() > group.getArgsList().size()) {
-			targetJdbcTemplate.batchUpdate(group.getSqlWithArgsList().toArray(new String[group.getSqlWithArgsList().size()]));
-			LOG.info("batchUpdateGroup1 size={},time={},sql={}", group.getSqlWithArgsList().size(), System.currentTimeMillis() - start, sql);
-		} else {
-			this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
-			LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, sql);
+		try {
+			if (group.getSqlWithArgsList().size() > group.getArgsList().size()) {
+				targetJdbcTemplate.batchUpdate(group.getSqlWithArgsList().toArray(new String[group.getSqlWithArgsList().size()]));
+				LOG.info("batchUpdateGroup1 size={},time={},sql={}", group.getSqlWithArgsList().size(), System.currentTimeMillis() - start, sql);
+			} else if (isDoris()) {
+				for (Object[] args : group.getArgsList()) {
+					this.targetJdbcTemplate.update(group.getSql(), args);
+				}
+				LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, sql);
+			} else {
+				this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
+				LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, sql);
+			}
+		} catch (
+			Exception e) {
+			LOG.error("batchUpdateGroup error,sql={}", sql, e);
+			throw e;
 		}
 	}
 
@@ -372,7 +393,25 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	 */
 	private Deque<UpdateSqlGroup> groupMergeSql(Deque<UpdateSql> sqlList) {
 		Deque<UpdateSqlGroup> ret = new ArrayDeque<>();
+		if (isDoris()) {
+			List<UpdateSql> deleteList = new ArrayList<>();
+			for (UpdateSql sql : sqlList) {
+				RowMap r = sql.getRowMap();
+				List<String> pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns());
+				for (String pk : pkColumns) {
+					if (r.getOldData().containsKey(pk)) {
+						//r = new RowMap(r.getRowType(), r.getDatabase(), r.getTable(), r.getTimestampMillis(), r.getPrimaryKeyColumns(), null);
+						deleteList.add(this.sqlDelete(r, true));
+						break;
+					}
+				}
+			}
+			if (!deleteList.isEmpty()) {
+				sqlList.addAll(deleteList);
+			}
+		}
 		for (UpdateSql sql : sqlList) {
+			RowMap r = sql.getRowMap();
 			UpdateSqlGroup group;
 			// PreparedStatement can have at most 65,535 parameters
 			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql()) //
@@ -382,9 +421,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			} else {
 				group = ret.getLast();
 			}
-			group.setLastRowMap(sql.getRowMap());
+			group.setLastRowMap(r);
 			group.getArgsList().add(sql.getArgs());
-			group.getDataList().add(sql.getRowMap().getData());
+			group.getDataList().add(r.getData());
 			if (sql.getSqlWithArgs() != null) {
 				group.getSqlWithArgsList().add(sql.getSqlWithArgs());
 			}
@@ -394,11 +433,12 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		}
 		for (UpdateSqlGroup group : ret) {
 			RowMap r = group.getLastRowMap();
-			if (r.getPrimaryKeyColumns().size() == 1 && group.getArgsList().size() > 1) {
+			List<String> pkColumns = isDoris() ? tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns()) : r.getPrimaryKeyColumns();
+			if (pkColumns.size() == 1 && group.getArgsList().size() > 1) {
 				// merge delete sql  "delete from table where id=? ..." to "delete from table where id in (?,?...)
 				Object[] updateArgs = group.getArgsList().get(0);
-				boolean merge = true;
-				if ("update".equals(r.getRowType())) {
+				boolean merge = group.getSql().startsWith("update");
+				if (merge) {
 					// merge update sql "update table set a=?,b=? where id=? ..." to "update table set a=?,b=? where id in(?,?...)"
 					Object[] before = null;
 					int argsLen = updateArgs.length - 1;
@@ -411,7 +451,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					}
 				}
 				if ("delete".equals(r.getRowType()) || (merge && "update".equals(r.getRowType()))) {
-					String key = delimit(r.getPrimaryKeyColumns().get(0));
+					String key = delimit(pkColumns.get(0));
 					int keyLoc = group.getSql().lastIndexOf(key + "=?");
 					Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
 					String sql = new StringBuilder().append(group.getSql().substring(0, keyLoc)).append(key).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
@@ -554,14 +594,22 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private UpdateSql sqlDelete(RowMap r) {
-		if (r.getPrimaryKeyColumns().isEmpty()) {
+		return sqlDelete(r, false);
+	}
+
+	private UpdateSql sqlDelete(RowMap r, boolean useOldData) {
+		List<String> pkColumns = r.getPrimaryKeyColumns();
+		if (pkColumns.isEmpty()) {
 			return null;
 		}
-		LinkedHashMap<String, Object> data = r.getData();
+		if (pkColumns.size() > 1 && this.isDoris()) {
+			pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), pkColumns);
+		}
+		LinkedHashMap<String, Object> data = useOldData ? r.getOldData() : r.getData();
 		StringBuilder sqlPri = new StringBuilder();
-		Object[] args = new Object[r.getPrimaryKeyColumns().size()];
+		Object[] args = new Object[pkColumns.size()];
 		int i = 0;
-		for (String pri : r.getPrimaryKeyColumns()) {
+		for (String pri : pkColumns) {
 			sqlPri.append(delimit(pri)).append("=? and ");
 			args[i++] = data.get(pri);
 		}

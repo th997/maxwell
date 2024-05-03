@@ -61,6 +61,8 @@ public class DataCompareLogic {
 					if (column.getDataType().contains("int") || column.getDataType().contains("decimal") || column.getDataType().contains("float") || column.getDataType().contains("double")) {
 						if (producer.isDoris() && column.getDataType().equals("bigint")) {
 							str.append(String.format(",sum(cast(t.`%s` as decimal(30))) as %s", column.getColumnName(), column.getColumnName().toLowerCase()));
+						} else if (column.getDataType().contains("float") || column.getDataType().contains("double")) {
+							str.append(String.format(",sum(cast(t.`%s` as decimal(24,6))) as %s", column.getColumnName(), column.getColumnName().toLowerCase()));
 						} else {
 							str.append(String.format(",sum(t.`%s`) as %s", column.getColumnName(), column.getColumnName().toLowerCase()));
 						}
@@ -129,12 +131,14 @@ public class DataCompareLogic {
 			String where = String.format("`%s` in (%s)", pri.getColumnName(), StringUtils.join(diff1, ","));
 			insertSql = String.format(insertSql, maxwellDb, db, table, where, maxwellClient);
 			LOG.info("dataDiff only mysql,db={},table={},updateSql=\n{}", db, table, insertSql);
+			//producer.maxwellJdbcTemplate.execute(insertSql);
 
 		}
 		if (!diff2.isEmpty()) { // delete
 			String deleteSql = "delete from %s where %s in (%s)";
 			deleteSql = String.format(deleteSql, producer.delimit(db, table), producer.delimit(pri.getColumnName()), StringUtils.join(diff2, ","));
 			LOG.info("dataDiff only target,db={},table={},updateSql=\n{}", db, table, deleteSql);
+			//producer.targetJdbcTemplate.execute(deleteSql);
 		}
 		if (diff1.isEmpty() && diff2.isEmpty()) {
 			String deleteSql = String.format("truncate table %s", producer.delimit(db, table));
@@ -143,6 +147,8 @@ public class DataCompareLogic {
 			String insertSql = String.format("insert into `%s`.`bootstrap` (database_name, table_name, client_id) values('%s','%s','%s')", maxwellDb, db, table, maxwellClient);
 			Integer count = producer.targetJdbcTemplate.queryForObject(String.format("select count(*) from %s", producer.delimit(db, table)), Integer.class);
 			LOG.info("dataDiff only diff,db={},table={},count={},updateSql=\n{}\n{}", db, table, count, deleteSql, insertSql);
+//			producer.targetJdbcTemplate.execute(deleteSql);
+//			producer.maxwellJdbcTemplate.execute(insertSql);
 		}
 	}
 
@@ -176,8 +182,7 @@ public class DataCompareLogic {
 			if (o1 instanceof Number && o2 instanceof Number) {
 				Number n1 = (Number) o1;
 				Number n2 = (Number) o2;
-				return Objects.equals(n1, n2) || n1.doubleValue() == ((Number) o2).doubleValue() || o1.toString().equals(o2.toString()) //
-					|| Math.round(n1.doubleValue() * 100) == Math.round(n2.doubleValue() * 100);
+				return Objects.equals(n1, n2) || n1.doubleValue() == ((Number) o2).doubleValue() || o1.toString().equals(o2.toString());
 			}
 			if (o1 instanceof Boolean || o2 instanceof Boolean) {
 				if (o1 instanceof Number) {

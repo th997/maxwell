@@ -36,7 +36,7 @@ public class JdbcAsyncConsumer implements StoppableTask {
 	final JdbcProducer jdbcProducer;
 	final Properties kafkaProperties;
 	final Properties jdbcProperties;
-	final ObjectMapper om = new ObjectMapper();
+	final ObjectMapper om;
 	final Map<String, Object> props;
 	final String topic;
 	final String group;
@@ -48,6 +48,7 @@ public class JdbcAsyncConsumer implements StoppableTask {
 	public JdbcAsyncConsumer(MaxwellContext context) throws IOException {
 		this.context = context;
 		this.jdbcProducer = new JdbcProducer(context);
+		om = jdbcProducer.om;
 		// get config
 		this.kafkaProperties = context.getConfig().kafkaProperties;
 		this.jdbcProperties = context.getConfig().jdbcProperties;

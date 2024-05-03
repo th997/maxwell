@@ -95,7 +95,7 @@ public class DorisLogic {
 			throw new RuntimeException(e);
 		}
 		if (!jdbcProducer.initData) {
-			LOG.info("streamLoad database={},table={},size={},time={}", schema, table, list.size(), System.currentTimeMillis() - start);
+			LOG.info("streamLoad table={}.{},size={},time={}", schema, table, list.size(), System.currentTimeMillis() - start);
 		}
 	}
 

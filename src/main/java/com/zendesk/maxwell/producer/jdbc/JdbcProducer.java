@@ -47,6 +47,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	final JdbcTemplate maxwellJdbcTemplate;
 	final DataSourceTransactionManager targetTransactionManager;
 	final DataSourceTransactionManager mysqlTransactionManager;
+	final ThreadPoolExecutor executor;
 	final TableSyncLogic tableSyncLogic;
 	DorisLogic dorisLogic;
 	final ConcurrentMap<Thread, Deque<UpdateSql>> sqlListMap = new ConcurrentHashMap();
@@ -68,14 +69,12 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	// init data
 	final boolean initData;
 	final boolean initDataLock;
-	final Integer initDataThreadNum;
 	final boolean initDataDelete;
 	final ObjectMapper om;
 	Position initPosition = null;
 	// data compare
 	final Integer dataCompareSecond;
 	DataCompareLogic dataCompareLogic;
-	Integer dataCompareLimit;
 	Integer dataCompareRowsLimit;
 
 	public JdbcProducer(MaxwellContext context) throws IOException {
@@ -105,11 +104,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		// init data
 		initData = "true".equalsIgnoreCase(properties.getProperty("initData"));
 		initDataLock = "true".equalsIgnoreCase(properties.getProperty("initDataLock", "true"));
-		initDataThreadNum = Integer.parseInt(properties.getProperty("initDataThreadNum", "10"));
 		initDataDelete = "true".equalsIgnoreCase(properties.getProperty("initDataDelete"));
-		if (initData) {
-			maxPoolSize = Math.max(initDataThreadNum, maxPoolSize);
-		}
 		String url = properties.getProperty("url");
 		type = properties.getProperty("type");
 		if (StringUtils.isEmpty(type)) {
@@ -134,6 +129,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		maxwellJdbcTemplate = new JdbcTemplate(maxwellPool.getCpds(), true);
 		targetTransactionManager = new DataSourceTransactionManager(targetDs);
 		mysqlTransactionManager = new DataSourceTransactionManager(sourcePool.getCpds());
+		executor = new ThreadPoolExecutor(maxPoolSize, maxPoolSize, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(maxPoolSize), Executors.defaultThreadFactory(), new ThreadPoolExecutor.CallerRunsPolicy());
 		tableSyncLogic = new TableSyncLogic(this);
 		if (isDoris()) {
 			dorisLogic = new DorisLogic(this);
@@ -163,7 +159,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		}
 		if (dataCompareSecond > 0) {
 			dataCompareLogic = new DataCompareLogic(this);
-			dataCompareLimit = Integer.parseInt(properties.getProperty("dataCompareLimit", "200000"));
 			dataCompareRowsLimit = Integer.parseInt(properties.getProperty("dataCompareRowsLimit", "2000000"));
 			this.startCompareTask();
 		}
@@ -307,11 +302,32 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		Deque<UpdateSqlGroup> groupList = this.groupMergeSql(sqlList);
 		TransactionStatus status = isDoris() ? null : targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
-			for (UpdateSqlGroup group : groupList) {
-				if (isDoris() && group.getSql().startsWith("insert")) {
-					dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
-				} else {
-					this.batchUpdateGroup(group);
+			if (this.isSupportAsync(groupList)) {
+				int i = 0;
+				CompletableFuture[] futures = new CompletableFuture[groupList.size()];
+				for (UpdateSqlGroup group : groupList) {
+					CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+						if (isDoris() && group.getSql().startsWith("insert")) {
+							dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
+						} else {
+							this.batchUpdateGroup(group);
+						}
+					}, executor);
+					futures[i++] = future;
+				}
+				try {
+					CompletableFuture.allOf(futures).get();
+				} catch (ExecutionException | InterruptedException e) {
+					throw new RuntimeException(e);
+				}
+			} else {
+				for (UpdateSqlGroup group : groupList) {
+					this.setLastUpdate(thread);
+					if (isDoris() && group.getSql().startsWith("insert")) {
+						dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
+					} else {
+						this.batchUpdateGroup(group);
+					}
 				}
 			}
 			if (!isDoris()) {
@@ -360,6 +376,18 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				throw e;
 			}
 		}
+		this.setLastUpdate(thread);
+	}
+
+	private boolean isSupportAsync(Deque<UpdateSqlGroup> groupList) {
+		boolean ret = groupList.size() > 1;
+		for (UpdateSqlGroup group : groupList) {
+			if (!isDoris() || !group.getSql().startsWith("insert")) {
+				ret = false;
+				break;
+			}
+		}
+		return ret;
 	}
 
 	private void batchUpdateGroup(UpdateSqlGroup group) {
@@ -391,9 +419,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	 * @param sqlList
 	 * @return
 	 */
-	private Deque<UpdateSqlGroup> groupMergeSql(Deque<UpdateSql> sqlList) {
+	private Deque<UpdateSqlGroup> groupMergeSql(Collection<UpdateSql> sqlList) {
 		Deque<UpdateSqlGroup> ret = new ArrayDeque<>();
 		if (isDoris()) {
+			// if update primary key
 			List<UpdateSql> deleteList = new ArrayList<>();
 			for (UpdateSql sql : sqlList) {
 				RowMap r = sql.getRowMap();
@@ -401,6 +430,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				for (String pk : pkColumns) {
 					if (r.getOldData().containsKey(pk)) {
 						//r = new RowMap(r.getRowType(), r.getDatabase(), r.getTable(), r.getTimestampMillis(), r.getPrimaryKeyColumns(), null);
+						r.setBindObject(null);
 						deleteList.add(this.sqlDelete(r, true));
 						break;
 					}
@@ -410,12 +440,30 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				sqlList.addAll(deleteList);
 			}
 		}
+		// Put the same tables into a batch for execution, and delete by id lastly
+		if (sqlList.size() > 2) {
+			sqlList = new ArrayList<>(sqlList);
+			Collections.sort((List<UpdateSql>) sqlList, (o1, o2) -> {
+				int sortRet = o1.getRowMap().getTable().compareTo(o2.getRowMap().getTable());
+				if (sortRet == 0 && isDoris()) {
+					boolean o1IsDelete = o1.getSql().startsWith("delete");
+					boolean o2IsDelete = o2.getSql().startsWith("delete");
+					if (o1IsDelete && !o2IsDelete) {
+						sortRet = 1;
+					} else if (!o1IsDelete && o2IsDelete) {
+						sortRet = -1;
+					}
+				}
+				return sortRet;
+			});
+		}
+		// same sql merge to a group
 		for (UpdateSql sql : sqlList) {
 			RowMap r = sql.getRowMap();
 			UpdateSqlGroup group;
 			// PreparedStatement can have at most 65,535 parameters
 			if (ret.isEmpty() || !ret.getLast().getSql().equals(sql.getSql()) //
-				|| ("delete".equals(ret.getLast().getLastRowMap().getRowType()) && ret.getLast().getArgsList().size() * ret.getLast().getArgsList().get(0).length >= 65000)) {
+				|| (ret.getLast().getSql().startsWith("delete") && ret.getLast().getArgsList().size() * ret.getLast().getArgsList().get(0).length >= 65000)) {
 				group = new UpdateSqlGroup(sql.getSql());
 				ret.add(group);
 			} else {
@@ -431,6 +479,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				group.getSqlWithArgsList().clear();
 			}
 		}
+		// same delete/update sql merge to in(...)
 		for (UpdateSqlGroup group : ret) {
 			RowMap r = group.getLastRowMap();
 			List<String> pkColumns = isDoris() ? tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns()) : r.getPrimaryKeyColumns();
@@ -450,14 +499,14 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 						before = args;
 					}
 				}
-				if ("delete".equals(r.getRowType()) || (merge && "update".equals(r.getRowType()))) {
+				if (group.getSql().startsWith("delete") || merge) {
 					String key = delimit(pkColumns.get(0));
 					int keyLoc = group.getSql().lastIndexOf(key + "=?");
 					Object[] ids = group.getArgsList().stream().map(args -> args[args.length - 1]).toArray(size -> new Object[size]);
 					String sql = new StringBuilder().append(group.getSql().substring(0, keyLoc)).append(key).append(" in (").append(String.join(",", Collections.nCopies(ids.length, "?"))).append(")").toString();
 					group.setSql(sql);
 					group.setArgsList(new ArrayList<>());
-					if ("update".equals(r.getRowType())) {
+					if (merge) {
 						group.getArgsList().add(ArrayUtils.addAll(Arrays.copyOfRange(updateArgs, 0, updateArgs.length - 1), ids));
 					} else {
 						group.getArgsList().add(ids);
@@ -696,6 +745,14 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		if (dorisLogic != null) {
 			dorisLogic.stop();
 		}
+		executor.shutdown();
+		while (!executor.isTerminated()) {
+			try {
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
 	}
 
 	@Override
@@ -828,8 +885,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		TransactionStatus status = mysqlTransactionManager.getTransaction(definition);
 		// not start transaction with consistent snapshot
 		boolean transactionStart = false;
-		ThreadPoolExecutor executor = new ThreadPoolExecutor(initDataThreadNum, initDataThreadNum, 0L, TimeUnit.MILLISECONDS,
-			new LinkedBlockingQueue<>(initDataThreadNum), Executors.defaultThreadFactory(), new ThreadPoolExecutor.CallerRunsPolicy());
 		Integer insertCount = 0;
 		try {
 			for (String database : syncDbs) {
@@ -862,15 +917,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		} catch (Exception e) {
 			mysqlTransactionManager.rollback(status);
 			LOG.error("sync data error", e);
-		} finally {
-			executor.shutdown();
-			while (!executor.isTerminated()) {
-				try {
-					Thread.sleep(100);
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
-			}
 		}
 		LOG.info("insertCount={},time={}", insertCount, System.currentTimeMillis() - start);
 	}

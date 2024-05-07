@@ -69,11 +69,12 @@ public class DorisLogic {
 			String url = String.format("%s/api/%s/%s/_stream_load", httpAddress, schema, table);
 			String user = properties.getProperty("user");
 			String password = properties.getProperty("password", "");
-			String label = schema + "_" + table + System.currentTimeMillis();
+			String label = schema + "_" + table + "_" + UUID.randomUUID().toString().replace("-", "");
 			HttpPut httpPut = new HttpPut(url);
 			httpPut.setHeader("label", label);
 			httpPut.setHeader("format", "json");
 			httpPut.setHeader("strip_outer_array", "true");
+			httpPut.setHeader("ignore_json_size", "true");
 			httpPut.setHeader("strict_mode", "true");
 			httpPut.setHeader("Expect", "100-continue");
 			httpPut.setHeader("Authorization", "Basic " + Base64.getEncoder().encodeToString(String.format("%s:%s", user, password).getBytes()));
@@ -94,7 +95,7 @@ public class DorisLogic {
 		} catch (IOException e) {
 			throw new RuntimeException(e);
 		}
-		if (!jdbcProducer.initData) {
+		if (!(jdbcProducer.initSchemas && jdbcProducer.initData)) {
 			LOG.info("streamLoad table={}.{},size={},time={}", schema, table, list.size(), System.currentTimeMillis() - start);
 		}
 	}

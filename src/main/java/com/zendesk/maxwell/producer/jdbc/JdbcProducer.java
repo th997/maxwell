@@ -406,8 +406,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 				LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, sql);
 			}
-		} catch (
-			Exception e) {
+		} catch (Exception e) {
 			LOG.error("batchUpdateGroup error,sql={}", sql, e);
 			throw e;
 		}

@@ -109,4 +109,22 @@ public class TableColumn {
 	public void setTableName(String tableName) {
 		this.tableName = tableName;
 	}
+
+	@Override
+	public String toString() {
+		return "TableColumn{" +
+			"tableName='" + tableName + '\'' +
+			", columnName='" + columnName + '\'' +
+			", columnType='" + columnType + '\'' +
+			", dataType='" + dataType + '\'' +
+			", strLen=" + strLen +
+			", numericPrecision=" + numericPrecision +
+			", numericScale=" + numericScale +
+			", columnDefault='" + columnDefault + '\'' +
+			", nullAble=" + nullAble +
+			", pri=" + pri +
+			", autoIncrement=" + autoIncrement +
+			", columnComment='" + columnComment + '\'' +
+			'}';
+	}
 }

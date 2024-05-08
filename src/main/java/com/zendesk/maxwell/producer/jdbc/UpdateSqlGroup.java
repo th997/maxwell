@@ -10,7 +10,6 @@ public class UpdateSqlGroup {
 	private String sql;
 	private List<Object[]> argsList = new ArrayList<>();
 	private RowMap lastRowMap;
-	private List<String> sqlWithArgsList = new ArrayList<>();
 	private List<Map<String, Object>> dataList = new ArrayList<>();
 
 	public UpdateSqlGroup(String sql) {
@@ -39,14 +38,6 @@ public class UpdateSqlGroup {
 
 	public void setLastRowMap(RowMap lastRowMap) {
 		this.lastRowMap = lastRowMap;
-	}
-
-	public List<String> getSqlWithArgsList() {
-		return sqlWithArgsList;
-	}
-
-	public void setSqlWithArgsList(List<String> sqlWithArgsList) {
-		this.sqlWithArgsList = sqlWithArgsList;
 	}
 
 	public List<Map<String, Object>> getDataList() {

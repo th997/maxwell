@@ -3,10 +3,14 @@ package com.zendesk.maxwell.producer.jdbc.converter;
 import com.zendesk.maxwell.producer.jdbc.TableColumn;
 import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Objects;
 
 public class DorisConverter implements Converter {
+	protected final Logger LOG = LoggerFactory.getLogger(getClass());
+
 	private final TableColumn source;
 
 	public DorisConverter(TableColumn source) {
@@ -21,10 +25,15 @@ public class DorisConverter implements Converter {
 
 	@Override
 	public boolean isSameType(TableColumn c) {
-		return Objects.equals(source.getColumnName(), c.getColumnName())//
-			&& (Objects.equals(source.getDataType(), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getDataType()) || Objects.equals(this.typeGet(source.getDataType()), c.getColumnType()))//
-			&& (Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null || c.getColumnType().equalsIgnoreCase("string") || source.getStrLen() * 3 <= c.getStrLen() || c.getStrLen() == 1048576)//
-			;
+		boolean sameName = Objects.equals(source.getColumnName(), c.getColumnName());
+		String typeGet = this.typeGet(source.getDataType());
+		boolean sameType = Objects.equals(source.getDataType(), c.getDataType()) || Objects.equals(typeGet, c.getDataType()) || (typeGet.startsWith(c.getDataType()) && c.getDataType().equals("varchar")) || Objects.equals(typeGet, c.getColumnType());
+		boolean sameLen = Objects.equals(source.getStrLen(), c.getStrLen()) || source.getStrLen() == null || c.getStrLen() == null || c.getColumnType().equalsIgnoreCase("string") || source.getStrLen() * 3 <= c.getStrLen() || c.getStrLen() == 1048576;
+		boolean ret = sameName && sameType && sameLen;
+		if (!ret) {
+			LOG.info("isSameType=false,source={},target={},sameName={},sameType={},sameLen={}", source, c, sameName, sameType, sameLen);
+		}
+		return ret;
 	}
 
 	@Override

@@ -57,7 +57,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	String type;
 	final Integer batchLimit;
 	final Integer batchTransactionLimit;
-	final Integer sqlMergeSize;
 	Integer maxPoolSize;
 	final Integer syncIndexMinute;
 	final Integer heartbeatSecond;
@@ -93,7 +92,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		initSchemas = "true".equalsIgnoreCase(properties.getProperty("initSchemas"));
 		batchLimit = Integer.parseInt(properties.getProperty("batchLimit", "1000"));
 		batchTransactionLimit = Integer.parseInt(properties.getProperty("batchTransactionLimit", "160000"));
-		sqlMergeSize = Integer.parseInt(properties.getProperty("sqlMergeSize", "5"));
 		maxPoolSize = Integer.parseInt(properties.getProperty("maxPoolSize", "10"));
 		syncIndexMinute = Integer.parseInt(properties.getProperty("syncIndexMinute", "600"));
 		sqlArgsLimit = Integer.parseInt(properties.getProperty("sqlArgsLimit", "65536"));
@@ -392,22 +390,17 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 
 	private void batchUpdateGroup(UpdateSqlGroup group) {
 		long start = System.currentTimeMillis();
-		String sql = group.getSqlWithArgsList().size() > group.getArgsList().size() ? (group.getSql() + "...") : group.getSql();
 		try {
-			if (group.getSqlWithArgsList().size() > group.getArgsList().size()) {
-				targetJdbcTemplate.batchUpdate(group.getSqlWithArgsList().toArray(new String[group.getSqlWithArgsList().size()]));
-				LOG.info("batchUpdateGroup1 size={},time={},sql={}", group.getSqlWithArgsList().size(), System.currentTimeMillis() - start, sql);
-			} else if (isDoris()) {
+			if (isDoris()) {
 				for (Object[] args : group.getArgsList()) {
 					this.targetJdbcTemplate.update(group.getSql(), args);
 				}
-				LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, sql);
 			} else {
 				this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
-				LOG.info("batchUpdateGroup2 size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, sql);
 			}
+			LOG.info("batchUpdateGroup size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, group.getSql());
 		} catch (Exception e) {
-			LOG.error("batchUpdateGroup error,sql={}", sql, e);
+			LOG.error("batchUpdateGroup error,sql={}", group.getSql(), e);
 			throw e;
 		}
 	}
@@ -471,12 +464,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			group.setLastRowMap(r);
 			group.getArgsList().add(sql.getArgs());
 			group.getDataList().add(r.getData());
-			if (sql.getSqlWithArgs() != null) {
-				group.getSqlWithArgsList().add(sql.getSqlWithArgs());
-			}
-			if (group.getArgsList().size() != group.getSqlWithArgsList().size()) {
-				group.getSqlWithArgsList().clear();
-			}
 		}
 		// same delete/update sql merge to in(...)
 		for (UpdateSqlGroup group : ret) {
@@ -510,22 +497,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					} else {
 						group.getArgsList().add(ids);
 					}
-					group.getSqlWithArgsList().clear();
-				}
-			}
-		}
-		if (ret.size() > 1 && !isDoris()) {
-			Iterator<UpdateSqlGroup> iterator = ret.iterator();
-			UpdateSqlGroup last = null;
-			while (iterator.hasNext()) {
-				UpdateSqlGroup next = iterator.next();
-				if (last != null && !last.getSqlWithArgsList().isEmpty() && !next.getSqlWithArgsList().isEmpty() && next.getArgsList().size() < sqlMergeSize) {
-					last.getSqlWithArgsList().addAll(next.getSqlWithArgsList());
-					last.getDataList().addAll(next.getDataList());
-					last.setLastRowMap(next.getLastRowMap());
-					iterator.remove();
-				} else {
-					last = next;
 				}
 			}
 		}
@@ -594,7 +565,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		LinkedHashMap<String, Object> oldData = r.getOldData();
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlPri = new StringBuilder();
-		StringBuilder sqlWithArgs = new StringBuilder();
 		Object[] args = new Object[oldData.size() + keys.size()];
 		int i = 0;
 		for (String updateKey : oldData.keySet()) {
@@ -602,20 +572,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			Object value = this.convertValue(data.get(updateKey));
 			sqlK.append(key).append("=?,");
 			args[i++] = value;
-			if (value instanceof Number && sqlWithArgs != null) {
-				sqlWithArgs.append(key).append('=').append(value).append(',');
-			} else {
-				sqlWithArgs = null;
-			}
 		}
 		if (sqlK.length() == 0) {
 			return null;
 		}
 		sqlK.deleteCharAt(sqlK.length() - 1);
-		if (sqlWithArgs != null) {
-			sqlWithArgs.deleteCharAt(sqlWithArgs.length() - 1);
-			sqlWithArgs.append(" where ");
-		}
 		for (String pri : keys) {
 			String key = this.delimit(pri);
 			Object value = oldData.get(pri);
@@ -624,21 +585,12 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			}
 			sqlPri.append(key).append("=? and ");
 			args[i++] = value;
-			if (sqlWithArgs != null && value instanceof Number) {
-				sqlWithArgs.append(key).append('=').append(value).append("and ");
-			} else {
-				sqlWithArgs = null;
-			}
 		}
 		sqlPri.delete(sqlPri.length() - 4, sqlPri.length());
 		// update "%s"."%s" set %s where %s
 		String table = this.delimit(getSchema(r.getDatabase()), r.getTable());
 		String sql = new StringBuilder().append("update ").append(table).append(" set ").append(sqlK).append(" where ").append(sqlPri).toString();
-		if (sqlWithArgs != null) {
-			sqlWithArgs.delete(sqlWithArgs.length() - 4, sqlWithArgs.length());
-			sqlWithArgs.insert(0, "update " + table + " set ");
-		}
-		return new UpdateSql(sql, args, r, sqlWithArgs == null ? null : sqlWithArgs.toString());
+		return new UpdateSql(sql, args, r);
 	}
 
 	private UpdateSql sqlDelete(RowMap r) {

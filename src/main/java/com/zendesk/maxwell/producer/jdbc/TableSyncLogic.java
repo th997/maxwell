@@ -204,17 +204,16 @@ public class TableSyncLogic {
 		StringBuilder sb = new StringBuilder();
 		if (producer.isStarRocks()) {
 			sb.append(String.format("\nprimary key(%s)\n", key));
+			sb.append(String.format("order by(%s)\n", key));
 		} else {
 			sb.append(String.format("\nunique key(%s)\n", key));
 		}
 		sb.append(String.format("distributed by hash(%s) buckets %s\n", key, producer.bucketNum));
-		sb.append(String.format("order by(%s)\n", key));
 		// properties
 		sb.append("properties (\n");
 		String kv = "\"%s\" = \"%s\",\n";
 		sb.append(String.format(kv, "replication_num", producer.replicationNum));
 		if (!producer.isStarRocks()) {
-			sb.append(String.format(kv, "replication_allocation", "tag.location.default: 1"));
 			sb.append(String.format(kv, "enable_unique_key_merge_on_write", "true"));
 			// sb.append(String.format(kv, "light_schema_change", "true"));
 			// sb.append(String.format(kv, "store_row_column", "true"));

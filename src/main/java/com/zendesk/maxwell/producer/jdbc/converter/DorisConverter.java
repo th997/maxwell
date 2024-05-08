@@ -13,8 +13,11 @@ public class DorisConverter implements Converter {
 
 	private final TableColumn source;
 
-	public DorisConverter(TableColumn source) {
+	private final boolean isStarRocks;
+
+	public DorisConverter(TableColumn source, String type) {
 		this.source = source;
+		this.isStarRocks = "starrocks".equals(type);
 	}
 
 	// compare column if is same
@@ -91,10 +94,12 @@ public class DorisConverter implements Converter {
 			if (source.getStrLen() != null) {
 				if (source.isPri()) {
 					type = "varchar(" + source.getStrLen() + ")";
-				} else if (source.getStrLen() * 3 <= 1048576) {
+				} else if (isStarRocks && source.getStrLen() * 3 <= 1048576) {
 					type = "varchar(" + source.getStrLen() * 3 + ")";
-				} else {
+				} else if (isStarRocks) {
 					type = "varchar(1048576)";
+				} else {
+					type = "string";
 				}
 			} else if (source.getDataType().equals("time")) {
 				type = "varchar(32)";
@@ -104,7 +109,7 @@ public class DorisConverter implements Converter {
 		} else if (source.getDataType().endsWith("blob") //
 			|| source.getDataType().endsWith("binary")) {
 			//type = "varbinary";
-			type = "varchar(1048576)";
+			type = isStarRocks ? "varchar(1048576)" : "string";
 		} else if (source.getDataType().equals("double") || source.getDataType().equals("float")) {
 			type = source.getDataType();
 		} else if (source.getDataType().equals("timestamp")) {

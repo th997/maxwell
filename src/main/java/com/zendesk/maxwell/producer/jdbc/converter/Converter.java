@@ -7,9 +7,9 @@ public interface Converter {
 		if ("postgresql".equals(type)) {
 			return new PgConverter(source);
 		} else if ("doris".equals(type)) {
-			return new DorisConverter(source);
+			return new DorisConverter(source,type);
 		} else if ("starrocks".equals(type)) {
-			return new DorisConverter(source);
+			return new DorisConverter(source, type);
 		} else if ("mysql".equals(type)) {
 			return new MysqlConverter(source);
 		}

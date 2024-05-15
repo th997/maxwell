@@ -74,6 +74,7 @@ public class DataCompareLogic {
 			}
 			String sql = String.format(sqlCount, str, db, table);
 			Map<String, Object> map1 = producer.mysqlJdbcTemplate.queryForMap(sql);
+			sql = String.format(sqlCount, str, producer.getSchema(db), table);
 			if ('`' != producer.quote()) {
 				sql = sql.replace('`', producer.quote());
 			}

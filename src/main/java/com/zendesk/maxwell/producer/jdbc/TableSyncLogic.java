@@ -204,11 +204,12 @@ public class TableSyncLogic {
 		StringBuilder sb = new StringBuilder();
 		if (producer.isStarRocks()) {
 			sb.append(String.format("\nprimary key(%s)\n", key));
+			sb.append(String.format("distributed by hash(%s) buckets %s\n", key, producer.bucketNum));
 			sb.append(String.format("order by(%s)\n", key));
 		} else {
 			sb.append(String.format("\nunique key(%s)\n", key));
+			sb.append(String.format("distributed by hash(%s) buckets %s\n", key, producer.bucketNum));
 		}
-		sb.append(String.format("distributed by hash(%s) buckets %s\n", key, producer.bucketNum));
 		// properties
 		sb.append("properties (\n");
 		String kv = "\"%s\" = \"%s\",\n";
@@ -309,14 +310,16 @@ public class TableSyncLogic {
 	}
 
 	private void executeDDL(String database, String sql) {
+		LOG.info("executeDDL:" + sql);
+		long start = System.currentTimeMillis();
 		if (database != null) {
 			this.waitDorisAltering(database);
 		}
-		LOG.info("executeDDL:" + sql);
 		producer.getTargetJdbcTemplate().execute(sql);
 		if (database != null) {
 			this.waitDorisAltering(database);
 		}
+		LOG.info("executeDDL time={}", System.currentTimeMillis() - start);
 	}
 
 	public List<String> getMysqlTables(String tableSchema) {
@@ -382,7 +385,7 @@ public class TableSyncLogic {
 		// truncate
 		if (r.getChange() instanceof ResolvedTableTruncate) {
 			try {
-				this.executeDDL(targetSchema, String.format("truncate %s", producer.delimit(targetSchema, r.getTable())));
+				this.executeDDL(targetSchema, String.format("truncate table %s", producer.delimit(targetSchema, r.getTable())));
 			} catch (Throwable e) {
 				LOG.error("truncate error,sql={}", r.getSql(), e);
 			}
@@ -397,9 +400,6 @@ public class TableSyncLogic {
 		if (change.oldTable != null && change.newTable != null && !change.oldTable.name.equals(change.newTable.name)) {
 			String alterSql = "alter table if exists %s rename to %s";
 			if (producer.isDoris()) {
-				if (producer.isStarRocks()) {
-					return false;
-				}
 				alterSql = "alter table %s rename %s";
 			}
 			try {

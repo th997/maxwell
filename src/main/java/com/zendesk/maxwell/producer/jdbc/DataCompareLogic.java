@@ -92,7 +92,7 @@ public class DataCompareLogic {
 				// LOG.info("data compare table is same,db={},table={}", db, table);
 			}
 		}
-		LOG.info("data compare end,db={},tableCount={},time={},same={}", db, tableMap.size(), System.currentTimeMillis() - start, diffTables.isEmpty());
+		LOG.info("data compare end,db={},tableCount={},time={},diff tables=\"{}\"", db, tableMap.size(), System.currentTimeMillis() - start, String.join("\",\"", diffTables));
 		if (!diffTables.isEmpty() && count < 2) {
 			try {
 				Thread.sleep(producer.dataCompareSecond * 1000);

@@ -76,6 +76,8 @@ public class DorisConverter implements Converter {
 		String type = source.getColumnType();
 		if (source.getDataType().equals("decimal")) {
 			type = "decimal(38,18)";
+		} else if (source.isAutoIncrement() && source.isPri()) {
+			type = "bigint";
 		} else if (source.getColumnType().endsWith("unsigned") || source.getColumnType().contains(" unsigned ")) {
 			if (source.getDataType().equals("tinyint")) {
 				type = "smallint";

@@ -147,8 +147,8 @@ public class DorisConverter implements Converter {
 		return toColDefault(null);
 	}
 
-	public String toColDefault(TableColumn target) {
-		if (target != null && source.getColumnDefault() != null) {
+	private String toColDefault(TableColumn target) {
+		if (target == null && source.getColumnDefault() != null) {
 			if ("CURRENT_TIMESTAMP".equalsIgnoreCase(source.getColumnDefault()) || source.getColumnDefault().endsWith("()")) {
 				return "default " + source.getColumnDefault();
 			} else {

@@ -42,7 +42,7 @@ public class DorisConverter implements Converter {
 	@Override
 	public boolean isSameNullAble(TableColumn c) {
 		String type = this.typeGet(source.getDataType());
-		return Objects.equals(source.isNullAble(), c.isNullAble()) || (type.contains("timestamp") || type.contains("datetime") && c.isNullAble());
+		return Objects.equals(source.isNullAble(), c.isNullAble()) || (type.contains("timestamp") || type.contains("datetime") || c.isNullAble());
 	}
 
 	@Override
@@ -59,7 +59,7 @@ public class DorisConverter implements Converter {
 		StringBuilder tempSql = new StringBuilder("`" + source.getColumnName() + "` ");
 		tempSql.append(this.toColType());
 		tempSql.append(this.toColNullAble(target));
-		tempSql.append(this.toColDefault());
+		tempSql.append(this.toColDefault(target));
 		if (StringUtils.isNotEmpty(source.getColumnComment())) {
 			tempSql.append(String.format(" comment '%s'", StringEscapeUtils.escapeSql(source.getColumnComment())));
 		}
@@ -144,6 +144,17 @@ public class DorisConverter implements Converter {
 
 	@Override
 	public String toColDefault() {
+		return toColDefault(null);
+	}
+
+	public String toColDefault(TableColumn target) {
+		if (target != null && source.getColumnDefault() != null) {
+			if ("CURRENT_TIMESTAMP".equalsIgnoreCase(source.getColumnDefault()) || source.getColumnDefault().endsWith("()")) {
+				return "default " + source.getColumnDefault();
+			} else {
+				return String.format("default '%s'", StringEscapeUtils.escapeSql(source.getColumnDefault()));
+			}
+		}
 		return "";
 	}
 }

@@ -301,22 +301,25 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		TransactionStatus status = isDoris() ? null : targetTransactionManager.getTransaction(new DefaultTransactionDefinition());
 		try {
 			if (this.isSupportAsync(groupList)) {
-				int i = 0;
-				CompletableFuture[] futures = new CompletableFuture[groupList.size()];
+				List<CompletableFuture> futures = new ArrayList<>(groupList.size());
+				List<UpdateSqlGroup> deletes = new ArrayList<>();
 				for (UpdateSqlGroup group : groupList) {
 					CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
 						if (isDoris() && group.getSql().startsWith("insert")) {
 							dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
 						} else {
-							this.batchUpdateGroup(group);
+							deletes.add(group);
 						}
 					}, executor);
-					futures[i++] = future;
+					futures.add(future);
 				}
 				try {
-					CompletableFuture.allOf(futures).get();
+					CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
 				} catch (ExecutionException | InterruptedException e) {
 					throw new RuntimeException(e);
+				}
+				for (UpdateSqlGroup group : deletes) {
+					this.batchUpdateGroup(group);
 				}
 			} else {
 				for (UpdateSqlGroup group : groupList) {
@@ -378,14 +381,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	}
 
 	private boolean isSupportAsync(Deque<UpdateSqlGroup> groupList) {
-		boolean ret = groupList.size() > 1;
-		for (UpdateSqlGroup group : groupList) {
-			if (!isDoris() || !group.getSql().startsWith("insert")) {
-				ret = false;
-				break;
-			}
+		if (!isDoris() || groupList.size() <= 1) {
+			return false;
 		}
-		return ret;
+		return true;
 	}
 
 	private void batchUpdateGroup(UpdateSqlGroup group) {
@@ -398,7 +397,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			} else {
 				this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 			}
-			LOG.info("batchUpdateGroup size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, group.getSql());
+			LOG.info("batchUpdateGroup size={},time={},sql={}", group.getDataList().size(), System.currentTimeMillis() - start, StringUtils.left(group.getSql(), 512));
 		} catch (Exception e) {
 			LOG.error("batchUpdateGroup error,sql={}", group.getSql(), e);
 			throw e;
@@ -414,22 +413,39 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	private Deque<UpdateSqlGroup> groupMergeSql(Collection<UpdateSql> sqlList) {
 		Deque<UpdateSqlGroup> ret = new ArrayDeque<>();
 		if (isDoris()) {
-			// if update primary key
-			List<UpdateSql> deleteList = new ArrayList<>();
+			// if update primary key, convert to insert and delete
+			// if has insert after delete by same key, remove the delete sql
+			List<UpdateSql> addList = new ArrayList<>();
+			List<UpdateSql> removeList = new ArrayList<>();
+			Map<String, Integer> checkAddMap = new HashMap<>();
+			Map<String, UpdateSql> checkDeleteMap = new HashMap<>();
 			for (UpdateSql sql : sqlList) {
 				RowMap r = sql.getRowMap();
 				List<String> pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns());
-				for (String pk : pkColumns) {
-					if (r.getOldData().containsKey(pk)) {
-						//r = new RowMap(r.getRowType(), r.getDatabase(), r.getTable(), r.getTimestampMillis(), r.getPrimaryKeyColumns(), null);
-						r.setBindObject(null);
-						deleteList.add(this.sqlDelete(r, true));
-						break;
-					}
+				String key = this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getData().get(pkColumns.get(0))));
+				Integer addIndex = checkAddMap.get(key);
+				if (addIndex != null) {
+					addList.remove(addIndex);
+				}
+				UpdateSql deleteSql = checkDeleteMap.get(key);
+				if (deleteSql != null) {
+					removeList.add(deleteSql);
+				}
+				if (r.getOldData().containsKey(pkColumns.get(0))) {
+					//r = new RowMap(r.getRowType(), r.getDatabase(), r.getTable(), r.getTimestampMillis(), r.getPrimaryKeyColumns(), null);
+					r.setBindObject(null);
+					checkAddMap.put(this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getOldData().get(pkColumns.get(0)))), addList.size());
+					addList.add(this.sqlDelete(r, true));
+				}
+				if (sql.getSql().startsWith("delete")) {
+					checkDeleteMap.put(key, sql);
 				}
 			}
-			if (!deleteList.isEmpty()) {
-				sqlList.addAll(deleteList);
+			if (!addList.isEmpty()) {
+				sqlList.addAll(addList);
+			}
+			if (!removeList.isEmpty()) {
+				sqlList.removeAll(removeList);
 			}
 		}
 		// Put the same tables into a batch for execution, and delete by id lastly

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
-import org.apache.http.HttpVersion;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPut;
@@ -78,7 +77,7 @@ public class DorisLogic {
 			httpPut.setHeader("Expect", "100-continue");
 			httpPut.setHeader("Authorization", "Basic " + Base64.getEncoder().encodeToString(String.format("%s:%s", user, password).getBytes()));
 			httpPut.setEntity(new StringEntity(body, ContentType.APPLICATION_JSON));
-			httpPut.setProtocolVersion(HttpVersion.HTTP_1_0);
+			// httpPut.setProtocolVersion(HttpVersion.HTTP_1_0);
 			if (headers.containsKey(tableName)) {
 				headers.get(tableName).forEach((k, v) -> httpPut.setHeader(k, v));
 			}

@@ -194,7 +194,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				}
 				break;
 			case "delete":
-				sql = this.sqlDelete(r);
+				if (isDoris()) {
+					sql = this.sqlInsert(r);
+				} else {
+					sql = this.sqlDelete(r);
+				}
 				break;
 			case "table-create":
 			case "table-alter":
@@ -412,59 +416,59 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	 */
 	private Deque<UpdateSqlGroup> groupMergeSql(Collection<UpdateSql> sqlList) {
 		Deque<UpdateSqlGroup> ret = new ArrayDeque<>();
-		if (isDoris()) {
-			// if update primary key, convert to insert and delete
-			// if has insert after delete by same key, remove the delete sql
-			List<UpdateSql> addList = new ArrayList<>();
-			List<UpdateSql> removeList = new ArrayList<>();
-			Map<String, Integer> checkAddMap = new HashMap<>();
-			Map<String, UpdateSql> checkDeleteMap = new HashMap<>();
-			for (UpdateSql sql : sqlList) {
-				RowMap r = sql.getRowMap();
-				List<String> pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns());
-				String key = this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getData().get(pkColumns.get(0))));
-				Integer addIndex = checkAddMap.get(key);
-				if (addIndex != null) {
-					addList.remove(addIndex);
-				}
-				UpdateSql deleteSql = checkDeleteMap.get(key);
-				if (deleteSql != null) {
-					removeList.add(deleteSql);
-				}
-				if (r.getOldData().containsKey(pkColumns.get(0))) {
-					//r = new RowMap(r.getRowType(), r.getDatabase(), r.getTable(), r.getTimestampMillis(), r.getPrimaryKeyColumns(), null);
-					r.setBindObject(null);
-					checkAddMap.put(this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getOldData().get(pkColumns.get(0)))), addList.size());
-					addList.add(this.sqlDelete(r, true));
-				}
-				if (sql.getSql().startsWith("delete")) {
-					checkDeleteMap.put(key, sql);
-				}
-			}
-			if (!addList.isEmpty()) {
-				sqlList.addAll(addList);
-			}
-			if (!removeList.isEmpty()) {
-				sqlList.removeAll(removeList);
-			}
-		}
+//		if (isDoris()) {
+//			// if update primary key, convert to insert and delete
+//			// if has insert after delete by same key, remove the delete sql
+//			List<UpdateSql> addList = new ArrayList<>();
+//			List<UpdateSql> removeList = new ArrayList<>();
+//			Map<String, Integer> checkAddMap = new HashMap<>();
+//			Map<String, UpdateSql> checkDeleteMap = new HashMap<>();
+//			for (UpdateSql sql : sqlList) {
+//				RowMap r = sql.getRowMap();
+//				List<String> pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns());
+//				String key = this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getData().get(pkColumns.get(0))));
+//				Integer addIndex = checkAddMap.get(key);
+//				if (addIndex != null) {
+//					addList.remove(addIndex);
+//				}
+//				UpdateSql deleteSql = checkDeleteMap.get(key);
+//				if (deleteSql != null) {
+//					removeList.add(deleteSql);
+//				}
+//				if (r.getOldData().containsKey(pkColumns.get(0))) {
+//					//r = new RowMap(r.getRowType(), r.getDatabase(), r.getTable(), r.getTimestampMillis(), r.getPrimaryKeyColumns(), null);
+//					r.setBindObject(null);
+//					checkAddMap.put(this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getOldData().get(pkColumns.get(0)))), addList.size());
+//					addList.add(this.sqlDelete(r, true));
+//				}
+//				if (sql.getSql().startsWith("delete")) {
+//					checkDeleteMap.put(key, sql);
+//				}
+//			}
+//			if (!addList.isEmpty()) {
+//				sqlList.addAll(addList);
+//			}
+//			if (!removeList.isEmpty()) {
+//				sqlList.removeAll(removeList);
+//			}
+//		}
 		// Put the same tables into a batch for execution, and delete by id lastly
-		if (sqlList.size() > 2) {
-			sqlList = new ArrayList<>(sqlList);
-			Collections.sort((List<UpdateSql>) sqlList, (o1, o2) -> {
-				int sortRet = o1.getRowMap().getTable().compareTo(o2.getRowMap().getTable());
-				if (sortRet == 0 && isDoris()) {
-					boolean o1IsDelete = o1.getSql().startsWith("delete");
-					boolean o2IsDelete = o2.getSql().startsWith("delete");
-					if (o1IsDelete && !o2IsDelete) {
-						sortRet = 1;
-					} else if (!o1IsDelete && o2IsDelete) {
-						sortRet = -1;
-					}
-				}
-				return sortRet;
-			});
-		}
+//		if (sqlList.size() > 2) {
+//			sqlList = new ArrayList<>(sqlList);
+//			Collections.sort((List<UpdateSql>) sqlList, (o1, o2) -> {
+//				int sortRet = o1.getRowMap().getTable().compareTo(o2.getRowMap().getTable());
+//				if (sortRet == 0 && isDoris()) {
+//					boolean o1IsDelete = o1.getSql().startsWith("delete");
+//					boolean o2IsDelete = o2.getSql().startsWith("delete");
+//					if (o1IsDelete && !o2IsDelete) {
+//						sortRet = 1;
+//					} else if (!o1IsDelete && o2IsDelete) {
+//						sortRet = -1;
+//					}
+//				}
+//				return sortRet;
+//			});
+//		}
 		// same sql merge to a group
 		for (UpdateSql sql : sqlList) {
 			RowMap r = sql.getRowMap();
@@ -480,6 +484,16 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			group.setLastRowMap(r);
 			group.getArgsList().add(sql.getArgs());
 			group.getDataList().add(r.getData());
+			if (isDoris()) {
+				// if update primary key, convert to insert and delete
+				List<String> pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns());
+				if (!isDorisDelete(r) && r.getOldData().containsKey(pkColumns.get(0))) {
+					LinkedHashMap<String, Object> data = new LinkedHashMap<>(r.getData());
+					data.putAll(r.getOldData());
+					data.put("__op", 1); // delete tag
+					group.getDataList().add(data);
+				}
+			}
 		}
 		// same delete/update sql merge to in(...)
 		for (UpdateSqlGroup group : ret) {
@@ -549,9 +563,13 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		StringBuilder sql = new StringBuilder();
 		StringBuilder sqlK = new StringBuilder();
 		StringBuilder sqlV = new StringBuilder();
-		Object[] args = new Object[r.getData().size()];
+		LinkedHashMap<String, Object> data = r.getData();
+		if (this.isDorisDelete(r)) {
+			data.put("__op", 1); // delete tag
+		}
+		Object[] args = new Object[data.size()];
 		int i = 0;
-		for (Map.Entry<String, Object> e : r.getData().entrySet()) {
+		for (Map.Entry<String, Object> e : data.entrySet()) {
 			sqlK.append(delimit(e.getKey())).append(',');
 			sqlV.append("?,");
 			args[i++] = this.convertValue(e.getValue());
@@ -570,6 +588,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			sql.append("insert into ").append(delimit(getSchema(r.getDatabase()), r.getTable())).append('(').append(sqlK).append(") values(").append(sqlV).append(')');
 		}
 		return new UpdateSql(sql.toString(), args, r);
+	}
+
+	private boolean isDorisDelete(RowMap r) {
+		return isDoris() && "delete".equals(r.getRowType());
 	}
 
 	private UpdateSql sqlUpdate(RowMap r) {
@@ -617,9 +639,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		List<String> pkColumns = r.getPrimaryKeyColumns();
 		if (pkColumns.isEmpty()) {
 			return null;
-		}
-		if (pkColumns.size() > 1 && this.isDoris()) {
-			pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), pkColumns);
 		}
 		LinkedHashMap<String, Object> data = useOldData ? r.getOldData() : r.getData();
 		StringBuilder sqlPri = new StringBuilder();

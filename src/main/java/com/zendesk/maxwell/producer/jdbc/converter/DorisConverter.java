@@ -149,8 +149,16 @@ public class DorisConverter implements Converter {
 
 	private String toColDefault(TableColumn target) {
 		if (target == null && source.getColumnDefault() != null) {
-			if ("CURRENT_TIMESTAMP".equalsIgnoreCase(source.getColumnDefault()) || source.getColumnDefault().endsWith("()")) {
+			if ("CURRENT_TIMESTAMP".equalsIgnoreCase(source.getColumnDefault()) //
+				|| source.getColumnDefault().endsWith("()")//
+			) {
 				return "default " + source.getColumnDefault();
+			} else if ("CURRENT_TIMESTAMP(6)".equalsIgnoreCase(source.getColumnDefault())) {
+				return "default CURRENT_TIMESTAMP";
+			} else if (source.getDataType().contains("date") && source.getColumnDefault().startsWith("0000-00-00")) {
+				return "";
+			} else if (source.getDataType().equals("bit") && source.getColumnDefault().startsWith("b'")) {
+				return "default " + source.getColumnDefault().substring(1);
 			} else {
 				return String.format("default '%s'", StringEscapeUtils.escapeSql(source.getColumnDefault()));
 			}

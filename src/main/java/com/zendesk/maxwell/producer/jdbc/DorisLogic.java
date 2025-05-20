@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang.time.DateFormatUtils;
 import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPut;
@@ -67,7 +68,7 @@ public class DorisLogic {
 			String url = String.format("%s/api/%s/%s/_stream_load", httpAddress, schema, table);
 			String user = properties.getProperty("user");
 			String password = properties.getProperty("password", "");
-			String label = schema + "_" + table + "_" + UUID.randomUUID().toString().replace("-", "");
+			String label = schema + "_" + table + DateFormatUtils.format(System.currentTimeMillis(), "_yyyyMMddHHmmss_") + System.nanoTime();
 			HttpPut httpPut = new HttpPut(url);
 			httpPut.setHeader("label", label);
 			httpPut.setHeader("format", "json");

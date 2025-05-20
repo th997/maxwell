@@ -413,9 +413,6 @@ public class TableSyncLogic {
 		// alter table xxx change column_old column_new xxx
 		if (!CollectionUtils.isEmpty(change.columnMods)) {
 			String alterSql = "alter table %s rename column %s to %s";
-			if (producer.isDoris()) {
-				alterSql = "alter table %s rename column %s %s";
-			}
 			boolean onlyRename = false;
 			for (Object mod : change.columnMods) {
 				if (mod instanceof RenameColumnMod) {

@@ -171,7 +171,8 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			return;
 		}
 		Long now = System.currentTimeMillis();
-		if (now - getLastUpdate() > 1000 && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
+		long minTime = Math.max(1000, heartbeatSecond * 1000);
+		if (now - getLastUpdate() > minTime && sqlList.size() > 0 && sqlList.getLast().getRowMap().isTXCommit()) {
 			this.batchUpdate(sqlList);
 		}
 		if (!syncDbs.contains(r.getDatabase())) {
@@ -306,13 +307,12 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		try {
 			if (this.isSupportAsync(groupList)) {
 				List<CompletableFuture> futures = new ArrayList<>(groupList.size());
-				List<UpdateSqlGroup> deletes = new ArrayList<>();
 				for (UpdateSqlGroup group : groupList) {
 					CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
 						if (isDoris() && group.getSql().startsWith("insert")) {
 							dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
 						} else {
-							deletes.add(group);
+							this.batchUpdateGroup(group);
 						}
 					}, executor);
 					futures.add(future);
@@ -321,9 +321,6 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 					CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
 				} catch (ExecutionException | InterruptedException e) {
 					throw new RuntimeException(e);
-				}
-				for (UpdateSqlGroup group : deletes) {
-					this.batchUpdateGroup(group);
 				}
 			} else {
 				for (UpdateSqlGroup group : groupList) {
@@ -453,10 +450,10 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 //			}
 //		}
 		// Put the same tables into a batch for execution, and delete by id lastly
-//		if (sqlList.size() > 2) {
-//			sqlList = new ArrayList<>(sqlList);
-//			Collections.sort((List<UpdateSql>) sqlList, (o1, o2) -> {
-//				int sortRet = o1.getRowMap().getTable().compareTo(o2.getRowMap().getTable());
+		if (sqlList.size() > 2) {
+			sqlList = new ArrayList<>(sqlList);
+			Collections.sort((List<UpdateSql>) sqlList, (o1, o2) -> {
+				int sortRet = o1.getRowMap().getTable().compareTo(o2.getRowMap().getTable());
 //				if (sortRet == 0 && isDoris()) {
 //					boolean o1IsDelete = o1.getSql().startsWith("delete");
 //					boolean o2IsDelete = o2.getSql().startsWith("delete");
@@ -466,9 +463,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 //						sortRet = -1;
 //					}
 //				}
-//				return sortRet;
-//			});
-//		}
+				return sortRet;
+			});
+		}
 		// same sql merge to a group
 		for (UpdateSql sql : sqlList) {
 			RowMap r = sql.getRowMap();
@@ -776,11 +773,11 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		Long now = System.currentTimeMillis();
 		for (Map.Entry<Thread, Long> entry : lastUpdateMap.entrySet()) {
 			if (now - entry.getValue() > heartbeatInterval) {
-				try {
-					batchUpdate(null, entry.getKey());
-				} catch (Exception e) {
-					LOG.error("flushQueue error", e);
-				}
+//				try {
+				batchUpdate(null, entry.getKey());
+//				} catch (Exception e) {
+//					LOG.error("flushQueue error", e);
+//				}
 			}
 		}
 	}

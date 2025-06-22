@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class DorisLogic {
 	protected final Logger LOG = LoggerFactory.getLogger(getClass());
@@ -30,6 +31,7 @@ public class DorisLogic {
 	final Integer connectionTimeout;
 	final Integer readTimeout;
 	final Map<String, Map<String, String>> headers;
+	final AtomicLong longCounter = new AtomicLong();
 
 	public DorisLogic(JdbcProducer jdbcProducer) throws IOException {
 		this.jdbcProducer = jdbcProducer;
@@ -68,7 +70,7 @@ public class DorisLogic {
 			String url = String.format("%s/api/%s/%s/_stream_load", httpAddress, schema, table);
 			String user = properties.getProperty("user");
 			String password = properties.getProperty("password", "");
-			String label = schema + "_" + table + DateFormatUtils.format(System.currentTimeMillis(), "_yyyyMMddHHmmss_") + System.nanoTime();
+			String label = schema + "_" + table + DateFormatUtils.format(System.currentTimeMillis(), "_yyyyMMddHHmmss_") + longCounter.addAndGet(1);
 			HttpPut httpPut = new HttpPut(url);
 			httpPut.setHeader("label", label);
 			httpPut.setHeader("format", "json");

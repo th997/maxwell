@@ -36,6 +36,7 @@ import java.sql.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	protected final Logger LOG = LoggerFactory.getLogger(getClass());
@@ -308,13 +309,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 			if (this.isSupportAsync(groupList)) {
 				List<CompletableFuture> futures = new ArrayList<>(groupList.size());
 				for (UpdateSqlGroup group : groupList) {
-					CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-						if (isDoris() && group.getSql().startsWith("insert")) {
-							dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
-						} else {
-							this.batchUpdateGroup(group);
-						}
-					}, executor);
+					CompletableFuture<Void> future = CompletableFuture.runAsync(() -> this.batchUpdateGroup(group), executor);
 					futures.add(future);
 				}
 				try {
@@ -324,12 +319,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 				}
 			} else {
 				for (UpdateSqlGroup group : groupList) {
-					this.setLastUpdate(thread);
-					if (isDoris() && group.getSql().startsWith("insert")) {
-						dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
-					} else {
-						this.batchUpdateGroup(group);
-					}
+					this.batchUpdateGroup(group);
 				}
 			}
 			if (!isDoris()) {
@@ -392,9 +382,7 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 		long start = System.currentTimeMillis();
 		try {
 			if (isDoris()) {
-				for (Object[] args : group.getArgsList()) {
-					this.targetJdbcTemplate.update(group.getSql(), args);
-				}
+				dorisLogic.streamLoad(getSchema(group.getLastRowMap().getDatabase()), group.getLastRowMap().getTable(), group.getDataList());
 			} else {
 				this.targetJdbcTemplate.batchUpdate(group.getSql(), group.getArgsList());
 			}
@@ -413,58 +401,9 @@ public class JdbcProducer extends AbstractProducer implements StoppableTask {
 	 */
 	private Deque<UpdateSqlGroup> groupMergeSql(Collection<UpdateSql> sqlList) {
 		Deque<UpdateSqlGroup> ret = new ArrayDeque<>();
-//		if (isDoris()) {
-//			// if update primary key, convert to insert and delete
-//			// if has insert after delete by same key, remove the delete sql
-//			List<UpdateSql> addList = new ArrayList<>();
-//			List<UpdateSql> removeList = new ArrayList<>();
-//			Map<String, Integer> checkAddMap = new HashMap<>();
-//			Map<String, UpdateSql> checkDeleteMap = new HashMap<>();
-//			for (UpdateSql sql : sqlList) {
-//				RowMap r = sql.getRowMap();
-//				List<String> pkColumns = tableSyncLogic.getDorisPkColumns(r.getDatabase(), r.getTable(), r.getPrimaryKeyColumns());
-//				String key = this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getData().get(pkColumns.get(0))));
-//				Integer addIndex = checkAddMap.get(key);
-//				if (addIndex != null) {
-//					addList.remove(addIndex);
-//				}
-//				UpdateSql deleteSql = checkDeleteMap.get(key);
-//				if (deleteSql != null) {
-//					removeList.add(deleteSql);
-//				}
-//				if (r.getOldData().containsKey(pkColumns.get(0))) {
-//					//r = new RowMap(r.getRowType(), r.getDatabase(), r.getTable(), r.getTimestampMillis(), r.getPrimaryKeyColumns(), null);
-//					r.setBindObject(null);
-//					checkAddMap.put(this.delimit(r.getDatabase(), r.getTable(), String.valueOf(r.getOldData().get(pkColumns.get(0)))), addList.size());
-//					addList.add(this.sqlDelete(r, true));
-//				}
-//				if (sql.getSql().startsWith("delete")) {
-//					checkDeleteMap.put(key, sql);
-//				}
-//			}
-//			if (!addList.isEmpty()) {
-//				sqlList.addAll(addList);
-//			}
-//			if (!removeList.isEmpty()) {
-//				sqlList.removeAll(removeList);
-//			}
-//		}
-		// Put the same tables into a batch for execution, and delete by id lastly
+		// Put the same tables into a batch for execution
 		if (sqlList.size() > 2) {
-			sqlList = new ArrayList<>(sqlList);
-			Collections.sort((List<UpdateSql>) sqlList, (o1, o2) -> {
-				int sortRet = o1.getRowMap().getTable().compareTo(o2.getRowMap().getTable());
-//				if (sortRet == 0 && isDoris()) {
-//					boolean o1IsDelete = o1.getSql().startsWith("delete");
-//					boolean o2IsDelete = o2.getSql().startsWith("delete");
-//					if (o1IsDelete && !o2IsDelete) {
-//						sortRet = 1;
-//					} else if (!o1IsDelete && o2IsDelete) {
-//						sortRet = -1;
-//					}
-//				}
-				return sortRet;
-			});
+			sqlList = sqlList.stream().sorted(Comparator.comparing(o -> o.getRowMap().getDatabase() + ":" + o.getRowMap().getTable())).collect(Collectors.toList());
 		}
 		// same sql merge to a group
 		for (UpdateSql sql : sqlList) {
